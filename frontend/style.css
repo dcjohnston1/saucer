@@ -7,12 +7,18 @@ body {
   justify-content: center;
   align-items: flex-start;
   min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
   padding: 24px 16px;
 }
 
 #app {
   width: 100%;
   max-width: 480px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 header {
@@ -54,7 +60,7 @@ header h1 {
 
 .user-btn:hover { background: #e8e4e0; }
 
-#chat-panel { display: flex; flex-direction: column; gap: 12px; }
+#chat-panel { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
 #chat-panel.hidden, #user-select.hidden { display: none; }
 
 #active-user-bar {
@@ -78,8 +84,8 @@ header h1 {
   background: #fff;
   border-radius: 16px;
   padding: 16px;
-  min-height: 300px;
-  max-height: 55vh;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -123,7 +129,7 @@ header h1 {
   border: 1px solid #ddd;
   border-radius: 12px;
   padding: 10px 14px;
-  font-size: 0.93rem;
+  font-size: 16px;
   resize: none;
   font-family: inherit;
   line-height: 1.4;
@@ -146,3 +152,8 @@ header h1 {
 
 #send-btn:hover:not(:disabled) { background: #444; }
 #send-btn:disabled { opacity: 0.4; cursor: default; }
+
+@media (max-width: 480px) {
+  body { padding: 12px; }
+  header { margin-bottom: 16px; }
+}

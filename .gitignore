@@ -1,0 +1,17 @@
+# Credentials — never commit
+saucer-credentials.json
+*-credentials.json
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Session notes
+HANDOFF.md
+
+# OS
+.DS_Store
+*.swp

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Saucer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Saucer</h1>
+      <p class="tagline">Your household, in sync.</p>
+    </header>
+
+    <div id="user-select">
+      <button class="user-btn" data-user="husband">I'm the Husband</button>
+      <button class="user-btn" data-user="wife">I'm the Wife</button>
+    </div>
+
+    <div id="chat-panel" class="hidden">
+      <div id="active-user-bar">
+        Chatting as: <strong id="active-user-label"></strong>
+        <button id="switch-user">Switch</button>
+      </div>
+      <div id="messages"></div>
+      <div id="input-row">
+        <textarea id="msg-input" placeholder="Type a message…" rows="2"></textarea>
+        <button id="send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

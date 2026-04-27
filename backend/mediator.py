@@ -136,14 +136,15 @@ def _human_readable(status, value):
     return value
 
 
-def process_message(user, message):
+def process_message(user, message, history=None):
     doc_contents = read_doc()
     today = datetime.now(_tz())
     date_line = f"TODAY: {today.strftime('%A, %B %-d, %Y')}"
 
     full_system = SYSTEM_PROMPT + f"\n\n{date_line}\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
 
-    messages = [{"role": "user", "content": f"{user}: {message}"}]
+    prior = list(history) if history else []
+    messages = prior + [{"role": "user", "content": f"{user}: {message}"}]
 
     # Agentic loop — handles at most one tool call (add_todo)
     while True:

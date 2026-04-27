@@ -15,7 +15,8 @@ def chat():
     if not user or not message:
         return jsonify({'error': 'Missing user or message'}), 400
 
-    reply = process_message(user, message)
+    history = data.get('history', [])
+    reply = process_message(user, message, history)
     return jsonify({'reply': reply})
 
 @app.route('/health', methods=['GET'])

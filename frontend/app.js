@@ -1,6 +1,7 @@
 const BACKEND_URL = 'https://saucer-backend-987132498395.us-central1.run.app';
 
 let activeUser = null;
+let conversationHistory = [];
 
 const userSelect  = document.getElementById('user-select');
 const chatPanel   = document.getElementById('chat-panel');
@@ -17,6 +18,7 @@ document.getElementById('switch-user').addEventListener('click', () => {
   chatPanel.classList.add('hidden');
   userSelect.classList.remove('hidden');
   activeUser = null;
+  conversationHistory = [];
 });
 
 sendBtn.addEventListener('click', sendMessage);
@@ -46,13 +48,18 @@ async function sendMessage() {
     const res = await fetch(`${BACKEND_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: activeUser, message: text })
+      body: JSON.stringify({ user: activeUser, message: text, history: conversationHistory })
     });
 
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
     typing.remove();
     appendMessage('saucer', data.reply);
+    conversationHistory.push(
+      { role: 'user',      content: `${activeUser}: ${text}` },
+      { role: 'assistant', content: data.reply }
+    );
+    if (conversationHistory.length > 20) conversationHistory.splice(0, 2);
   } catch (err) {
     typing.remove();
     appendMessage('saucer', `Something went wrong: ${err.message}`);

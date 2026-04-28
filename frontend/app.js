@@ -9,6 +9,7 @@ const activeLabel = document.getElementById('active-user-label');
 const messages    = document.getElementById('messages');
 const msgInput    = document.getElementById('msg-input');
 const sendBtn     = document.getElementById('send-btn');
+const homeDocContent = document.getElementById('home-doc-content');
 
 document.querySelectorAll('.user-btn').forEach(btn => {
   btn.addEventListener('click', () => selectUser(btn.dataset.user));
@@ -19,7 +20,47 @@ document.getElementById('switch-user').addEventListener('click', () => {
   userSelect.classList.remove('hidden');
   activeUser = null;
   conversationHistory = [];
+  loadHomeList();
 });
+
+async function loadHomeList() {
+  homeDocContent.innerHTML = '<div class="loading">Loading shared list...</div>';
+  try {
+    const res = await fetch(`${BACKEND_URL}/doc`);
+    if (!res.ok) throw new Error('Failed to fetch doc');
+    const data = await res.json();
+    
+    if (!data.tasks || data.tasks.length === 0) {
+      homeDocContent.innerHTML = '<div class="empty-state">The list is currently empty.</div>';
+      return;
+    }
+
+    homeDocContent.innerHTML = '';
+    data.tasks.forEach(task => {
+      const card = document.createElement('div');
+      card.className = 'task-card';
+      
+      let dateHtml = '';
+      if (task.due && task.due !== 'none') {
+        dateHtml = `<span class="task-due">📅 ${task.due}</span>`;
+      }
+
+      card.innerHTML = `
+        <div class="task-main">
+          <div class="task-title">${task.title}</div>
+          ${dateHtml}
+        </div>
+        ${task.notes ? `<div class="task-notes">${task.notes}</div>` : ''}
+      `;
+      homeDocContent.appendChild(card);
+    });
+  } catch (err) {
+    homeDocContent.textContent = `Error: ${err.message}`;
+  }
+}
+
+// Initial load
+loadHomeList();
 
 sendBtn.addEventListener('click', sendMessage);
 msgInput.addEventListener('keydown', e => {
@@ -55,6 +96,11 @@ async function sendMessage() {
     const data = await res.json();
     typing.remove();
     appendMessage('saucer', data.reply);
+    
+    if (data.model) {
+      document.getElementById('model-info').textContent = `Powered by ${data.model}`;
+    }
+
     conversationHistory.push(
       { role: 'user',      content: `${activeUser}: ${text}` },
       { role: 'assistant', content: data.reply }

@@ -17,7 +17,42 @@ def chat():
 
     history = data.get('history', [])
     reply = process_message(user, message, history)
-    return jsonify({'reply': reply})
+    return jsonify({
+        'reply': reply,
+        'model': 'gemini-2.5-flash'
+    })
+
+@app.route('/doc', methods=['GET'])
+def get_doc():
+    from gdocs import read_doc
+    raw_content = read_doc()
+    
+    tasks = []
+    lines = raw_content.split('\n')
+    for line in lines:
+        if not line.strip() or not line.startswith('TODO'):
+            continue
+        
+        parts = [p.strip() for p in line.split('|')]
+        # Format: TODO | title | due:date | added:date | notes:text
+        task = {
+            'title': parts[1] if len(parts) > 1 else 'Untitled Task',
+            'due': None,
+            'added': None,
+            'notes': None
+        }
+        
+        for part in parts[2:]:
+            if part.startswith('due:'):
+                task['due'] = part[4:]
+            elif part.startswith('added:'):
+                task['added'] = part[6:]
+            elif part.startswith('notes:'):
+                task['notes'] = part[6:]
+        
+        tasks.append(task)
+        
+    return jsonify({'tasks': tasks})
 
 @app.route('/health', methods=['GET'])
 def health():

@@ -1,4 +1,5 @@
-import anthropic
+import os
+import google.generativeai as genai
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import dateparser
@@ -6,31 +7,8 @@ import dateparser
 from prompts import SYSTEM_PROMPT
 from gdocs import read_doc, append_to_doc
 
-client = anthropic.Anthropic()
-
-ADD_TODO_TOOL = {
-    "name": "add_todo",
-    "description": "Add a to-do item to the shared household Google Doc.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "title": {
-                "type": "string",
-                "description": "The to-do item title."
-            },
-            "date_expression": {
-                "type": "string",
-                "description": "The user's exact date phrase, e.g. 'this weekend', 'next Tuesday', 'tomorrow'. Null if no date was given."
-            },
-            "notes": {
-                "type": "string",
-                "description": "Optional extra context or notes."
-            }
-        },
-        "required": ["title"]
-    }
-}
-
+# Configure Gemini
+genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 def _tz():
     return ZoneInfo("America/Los_Angeles")
@@ -136,6 +114,35 @@ def _human_readable(status, value):
     return value
 
 
+def add_todo(title: str, date_expression: str = None, notes: str = None):
+    """Add a to-do item to the shared household Google Doc.
+
+    Args:
+        title: The to-do item title.
+        date_expression: The user's exact date phrase, e.g. 'this weekend', 'next Tuesday', 'tomorrow'. Null if no date was given.
+        notes: Optional extra context or notes.
+    """
+    status, value = resolve_date(date_expression)
+    today = _today()
+
+    if status == "ambiguous":
+        return {
+            "status": "ambiguous",
+            "expression": value,
+            "message": f"Could not resolve '{value}' to a specific date."
+        }
+    else:
+        added = today.strftime("%Y-%m-%d")
+        due = value if status in ("date", "range") else "none"
+        append_to_doc(title, due, added, notes)
+        human = _human_readable(status, value)
+        return {
+            "status": "ok",
+            "due": due,
+            "human_readable": human
+        }
+
+
 def process_message(user, message, history=None):
     doc_contents = read_doc()
     today = datetime.now(_tz())
@@ -143,68 +150,24 @@ def process_message(user, message, history=None):
 
     full_system = SYSTEM_PROMPT + f"\n\n{date_line}\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
 
-    prior = list(history) if history else []
-    messages = prior + [{"role": "user", "content": f"{user}: {message}"}]
+    # Convert history to Gemini format
+    chat_history = []
+    if history:
+        for m in history:
+            role = 'user' if m['role'] == 'user' else 'model'
+            chat_history.append({'role': role, 'parts': [m['content']]})
 
-    # Agentic loop — handles at most one tool call (add_todo)
-    while True:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            system=full_system,
-            tools=[ADD_TODO_TOOL],
-            messages=messages,
-        )
+    # Initialize model with tool
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-flash',
+        system_instruction=full_system,
+        tools=[add_todo]
+    )
 
-        # Collect any text and tool_use blocks
-        text_parts = []
-        tool_use_block = None
-        for block in response.content:
-            if block.type == "text":
-                text_parts.append(block.text)
-            elif block.type == "tool_use":
-                tool_use_block = block
-
-        # No tool call — return text response directly
-        if tool_use_block is None:
-            return " ".join(text_parts).strip()
-
-        # Process the tool call
-        tool_input = tool_use_block.input
-        title = tool_input.get("title", "")
-        date_expr = tool_input.get("date_expression") or ""
-        notes = tool_input.get("notes") or None
-
-        status, value = resolve_date(date_expr)
-
-        if status == "ambiguous":
-            tool_result = {
-                "status": "ambiguous",
-                "expression": value,
-                "message": f"Could not resolve '{value}' to a specific date."
-            }
-        else:
-            added = today.strftime("%Y-%m-%d")
-            due = value if status in ("date", "range") else "none"
-            append_to_doc(title, due, added, notes)
-            human = _human_readable(status, value)
-            tool_result = {
-                "status": "ok",
-                "due": due,
-                "human_readable": human
-            }
-
-        # Feed tool result back to model for final reply
-        messages = messages + [
-            {"role": "assistant", "content": response.content},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_block.id,
-                        "content": str(tool_result)
-                    }
-                ]
-            }
-        ]
+    # Start chat with history and automatic function calling
+    chat = model.start_chat(history=chat_history, enable_automatic_function_calling=True)
+    
+    # Send message
+    response = chat.send_message(f"{user}: {message}")
+    
+    return response.text

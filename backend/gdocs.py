@@ -26,8 +26,18 @@ def read_doc():
                     text += para_element['textRun']['content']
     return text
 
-def append_to_doc(title, due, added, notes=None):
+def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None):
     line = f"TODO | {title} | due:{due} | added:{added}"
+    if owner:
+        line += f" | owner:{owner}"
+    if priority:
+        line += f" | priority:{priority}"
+    if recurrence and recurrence != "none":
+        line += f" | recurrence:{recurrence}"
+    if location:
+        line += f" | location:{location}"
+    if urgency:
+        line += f" | urgency:{urgency}"
     if notes:
         line += f" | notes:{notes}"
     line += "\n"

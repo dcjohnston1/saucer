@@ -114,13 +114,20 @@ def _human_readable(status, value):
     return value
 
 
-def add_todo(title: str, date_expression: str = None, notes: str = None):
+def add_todo(title: str, date_expression: str = None, notes: str = None,
+             owner: str = None, priority: str = None, recurrence: str = None,
+             location: str = None, urgency: str = None):
     """Add a to-do item to the shared household Google Doc.
 
     Args:
         title: The to-do item title.
         date_expression: The user's exact date phrase, e.g. 'this weekend', 'next Tuesday', 'tomorrow'. Null if no date was given.
         notes: Optional extra context or notes.
+        owner: Who is responsible - husband, wife, or both.
+        priority: Task priority level - high or normal.
+        recurrence: How often this task repeats - none, daily, weekly, monthly, or yearly.
+        location: Where this task takes place, if relevant.
+        urgency: Notes on urgency or timing flexibility.
     """
     status, value = resolve_date(date_expression)
     today = _today()
@@ -134,7 +141,7 @@ def add_todo(title: str, date_expression: str = None, notes: str = None):
     else:
         added = today.strftime("%Y-%m-%d")
         due = value if status in ("date", "range") else "none"
-        append_to_doc(title, due, added, notes)
+        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency)
         human = _human_readable(status, value)
         return {
             "status": "ok",
@@ -166,8 +173,8 @@ def process_message(user, message, history=None):
 
     # Start chat with history and automatic function calling
     chat = model.start_chat(history=chat_history, enable_automatic_function_calling=True)
-    
+
     # Send message
     response = chat.send_message(f"{user}: {message}")
-    
+
     return response.text

@@ -34,19 +34,33 @@ def get_doc():
             continue
         
         parts = [p.strip() for p in line.split('|')]
-        # Format: TODO | title | due:date | added:date | notes:text
         task = {
             'title': parts[1] if len(parts) > 1 else 'Untitled Task',
             'due': None,
             'added': None,
+            'owner': None,
+            'priority': None,
+            'recurrence': None,
+            'location': None,
+            'urgency': None,
             'notes': None
         }
-        
+
         for part in parts[2:]:
             if part.startswith('due:'):
                 task['due'] = part[4:]
             elif part.startswith('added:'):
                 task['added'] = part[6:]
+            elif part.startswith('owner:'):
+                task['owner'] = part[6:]
+            elif part.startswith('priority:'):
+                task['priority'] = part[9:]
+            elif part.startswith('recurrence:'):
+                task['recurrence'] = part[11:]
+            elif part.startswith('location:'):
+                task['location'] = part[9:]
+            elif part.startswith('urgency:'):
+                task['urgency'] = part[8:]
             elif part.startswith('notes:'):
                 task['notes'] = part[6:]
         

@@ -206,6 +206,18 @@ function buildEmailCard(email) {
     });
   }
 
+  if (email.attachments && email.attachments.length > 0) {
+    const chips = document.createElement('div');
+    chips.className = 'email-attachments';
+    email.attachments.forEach(a => {
+      const chip = document.createElement('span');
+      chip.className = 'attachment-chip';
+      chip.textContent = `📎 ${a.filename}`;
+      chips.appendChild(chip);
+    });
+    card.appendChild(chips);
+  }
+
   wrapper.appendChild(card);
   addSwipeToDismiss(wrapper, card, email.id);
   return wrapper;

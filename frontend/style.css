@@ -594,6 +594,23 @@ header h1 {
 
 .email-expand-btn:hover { opacity: 0.7; }
 
+.email-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.attachment-chip {
+  display: inline-block;
+  background: #ede8e3;
+  border: 1px solid #d8d0c8;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  color: #5a5045;
+}
+
 /* Scrollable main content */
 body { overflow-y: auto; height: auto; }
 #app { height: auto; }

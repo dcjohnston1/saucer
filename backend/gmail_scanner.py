@@ -1,3 +1,4 @@
+import io
 import os
 import json
 import base64
@@ -50,6 +51,44 @@ def _extract_body(payload):
     return ''
 
 
+def _extract_attachments(payload, service, user_id, msg_id):
+    """Walk MIME tree and return list of {filename, extracted_text} for PDF parts."""
+    attachments = []
+    mime = payload.get('mimeType', '')
+    filename = payload.get('filename', '')
+
+    if mime == 'application/pdf' and filename:
+        try:
+            body = payload.get('body', {})
+            data = body.get('data')
+            if not data:
+                attachment_id = body.get('attachmentId')
+                if attachment_id:
+                    resp = service.users().messages().attachments().get(
+                        userId=user_id, messageId=msg_id, id=attachment_id
+                    ).execute()
+                    data = resp.get('data', '')
+            if data:
+                pdf_bytes = base64.urlsafe_b64decode(data)
+                import pdfplumber
+                text = ''
+                with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                    for page in pdf.pages:
+                        text += (page.extract_text() or '') + '\n'
+                attachments.append({
+                    'filename': filename,
+                    'extracted_text': text[:8000].strip(),
+                })
+        except Exception as e:
+            print(f"Attachment extraction error ({filename}): {e}")
+            attachments.append({'filename': filename, 'extracted_text': ''})
+
+    for part in payload.get('parts', []):
+        attachments.extend(_extract_attachments(part, service, user_id, msg_id))
+
+    return attachments
+
+
 def scan_emails(sender_filter=None, after_timestamp=None):
     service = get_gmail_service()
     if not service:
@@ -86,6 +125,7 @@ def scan_emails(sender_filter=None, after_timestamp=None):
             date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
 
             body = _extract_body(message['payload'])
+            attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
 
             email_list.append({
                 'id': msg_id,
@@ -94,6 +134,7 @@ def scan_emails(sender_filter=None, after_timestamp=None):
                 'date': date,
                 'body': body,
                 'snippet': message.get('snippet', ''),
+                'attachments': attachments,
             })
 
         return email_list

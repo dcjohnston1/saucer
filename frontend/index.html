@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=10.0" />
+  <link rel="stylesheet" href="style.css?v=11.0" />
   <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
 <body>
@@ -23,6 +23,7 @@
       <ul class="drawer-menu">
         <li class="drawer-item" id="menu-senders">Monitored Senders</li>
         <li class="drawer-item" id="menu-proposals">Suggested To-Dos <span id="proposals-badge" class="drawer-badge hidden">0</span></li>
+        <li class="drawer-item" id="menu-list">Shared List</li>
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
         <li class="drawer-item drawer-item--soon">About</li>
@@ -40,6 +41,16 @@
           <input id="new-sender-input" type="email" placeholder="Add email address..." />
           <button id="add-sender-btn">Add</button>
         </div>
+      </div>
+    </div>
+
+    <div id="list-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="list-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title">Shared List</span>
+      </div>
+      <div class="screen-body">
+        <div id="list-screen-content"></div>
       </div>
     </div>
 
@@ -75,11 +86,6 @@
         <div id="emails-content"><div class="loading">Loading emails...</div></div>
       </div>
 
-      <div id="home-list-section">
-        <h3>Current Shared List</h3>
-        <div id="home-doc-content">Loading list...</div>
-      </div>
-
       <div id="chat-panel">
         <div id="messages"></div>
         <div id="input-row">
@@ -90,6 +96,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=8.0"></script>
+  <script src="app.js?v=9.0"></script>
 </body>
 </html>

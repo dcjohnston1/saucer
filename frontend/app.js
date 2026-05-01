@@ -75,6 +75,13 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('proposals-back-btn').addEventListener('click', closeProposalsScreen);
 
+  // List screen
+  document.getElementById('menu-list').addEventListener('click', () => {
+    closeDrawer();
+    openListScreen();
+  });
+  document.getElementById('list-back-btn').addEventListener('click', closeListScreen);
+
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');
   if (stored) {
@@ -96,7 +103,6 @@ function showMainApp(user) {
   document.getElementById('hamburger-btn').classList.remove('hidden');
   document.getElementById('user-name').textContent = user.name;
   loadEmailFilters();
-  loadHomeList();
   loadProposals();
 }
 
@@ -325,19 +331,28 @@ async function loadProposals() {
 
 // ── Shared List ───────────────────────────────────────────────────────────────
 
-async function loadHomeList() {
-  const homeDocContent = document.getElementById('home-doc-content');
-  homeDocContent.innerHTML = '<div class="loading">Loading shared list...</div>';
+function openListScreen() {
+  document.getElementById('list-screen').classList.remove('hidden');
+  loadListScreen();
+}
+
+function closeListScreen() {
+  document.getElementById('list-screen').classList.add('hidden');
+}
+
+async function loadListScreen() {
+  const container = document.getElementById('list-screen-content');
+  container.innerHTML = '<div class="loading">Loading shared list...</div>';
   try {
     const res = await fetch(`${BACKEND_URL}/doc`);
     if (!res.ok) throw new Error('Failed to fetch doc');
     const data = await res.json();
 
     if (!data.tasks || data.tasks.length === 0) {
-      homeDocContent.innerHTML = '<div class="empty-state">The list is currently empty.</div>';
+      container.innerHTML = '<div class="empty-state">The list is currently empty.</div>';
       return;
     }
-    homeDocContent.innerHTML = '';
+    container.innerHTML = '';
     data.tasks.forEach(task => {
       const wrapper = document.createElement('div');
       wrapper.className = 'task-card-wrapper';
@@ -348,18 +363,18 @@ async function loadHomeList() {
       const dateHtml = task.due && task.due !== 'none' ? `<span class="task-due">📅 ${task.due}</span>` : '';
       card.innerHTML = `
         <div class="task-main">
-          <div class="task-title">${task.title}</div>
+          <div class="task-title">${escapeHtml(task.title)}</div>
           ${dateHtml}
         </div>
-        ${task.notes ? `<div class="task-notes">${task.notes}</div>` : ''}
+        ${task.notes ? `<div class="task-notes">${escapeHtml(task.notes)}</div>` : ''}
       `;
 
       wrapper.appendChild(card);
-      homeDocContent.appendChild(wrapper);
+      container.appendChild(wrapper);
       addSwipeToComplete(wrapper, card, task.title);
     });
   } catch (err) {
-    homeDocContent.textContent = `Error: ${err.message}`;
+    container.textContent = `Error: ${err.message}`;
   }
 }
 

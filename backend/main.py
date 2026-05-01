@@ -117,11 +117,19 @@ def get_emails():
     to_scan = [e for e in visible if e['id'] not in scanned][:10]
     if to_scan:
         new_proposals = scan_emails_for_todos(to_scan)
-        proposals.update(new_proposals)
+        # Deduplicate: skip proposals whose title already exists anywhere
+        existing_titles = {p['title'].strip().lower() for plist in proposals.values() for p in plist}
+        for email_id, plist in new_proposals.items():
+            deduped = []
+            for p in plist:
+                norm = p['title'].strip().lower()
+                if norm not in existing_titles:
+                    deduped.append(p)
+                    existing_titles.add(norm)
+            proposals.setdefault(email_id, []).extend(deduped)
         for e in to_scan:
             scanned.add(e['id'])
-            if e['id'] not in proposals:
-                proposals[e['id']] = []
+            proposals.setdefault(e['id'], [])
         write_json('saucer-proposals.json', proposals)
         write_json('saucer-scanned.json', list(scanned))
 
@@ -157,16 +165,25 @@ def get_proposals():
 def accept_proposal(proposal_id):
     from gcs import read_json, write_json
     from mediator import add_todo
+    from gdocs import read_doc
 
     proposals = read_json('saucer-proposals.json', {})
     for email_id, plist in proposals.items():
         for p in plist:
             if p['id'] == proposal_id:
-                add_todo(
-                    title=p['title'],
-                    date_expression=p.get('date_expression') or None,
-                    notes=p.get('notes') or None
+                # Check for duplicate in Google Doc before appending
+                doc = read_doc()
+                title_norm = p['title'].strip().lower()
+                already_exists = any(
+                    len(parts) > 1 and parts[1].strip().lower() == title_norm
+                    for parts in ([x.strip() for x in line.split('|')] for line in doc.split('\n') if line.strip())
                 )
+                if not already_exists:
+                    add_todo(
+                        title=p['title'],
+                        date_expression=p.get('date_expression') or None,
+                        notes=p.get('notes') or None
+                    )
                 p['accepted'] = True
                 write_json('saucer-proposals.json', proposals)
                 return jsonify({'ok': True})

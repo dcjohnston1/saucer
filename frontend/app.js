@@ -104,6 +104,7 @@ function showMainApp(user) {
   document.getElementById('user-name').textContent = user.name;
   loadEmailFilters();
   loadProposals();
+  initVoice();
 }
 
 // ── Email Filters ─────────────────────────────────────────────────────────────
@@ -492,13 +493,61 @@ async function dismissProposal(proposalId, cardEl) {
   }
 }
 
+// ── Voice ─────────────────────────────────────────────────────────────────────
+
+let voiceEnabled = false;
+let recognition = null;
+
+function initVoice() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return; // browser doesn't support it — mic stays hidden
+
+  const micBtn = document.getElementById('mic-btn');
+  micBtn.classList.remove('hidden');
+
+  recognition = new SpeechRecognition();
+  recognition.lang = 'en-US';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    document.getElementById('msg-input').value = transcript;
+    micBtn.classList.remove('mic-btn--recording');
+    sendMessage(true);
+  };
+
+  recognition.onerror = () => micBtn.classList.remove('mic-btn--recording');
+  recognition.onend = () => micBtn.classList.remove('mic-btn--recording');
+
+  micBtn.addEventListener('click', () => {
+    if (micBtn.classList.contains('mic-btn--recording')) {
+      recognition.stop();
+    } else {
+      micBtn.classList.add('mic-btn--recording');
+      recognition.start();
+    }
+  });
+}
+
+function speakReply(text) {
+  if (!voiceEnabled || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'en-US';
+  utt.rate = 1.05;
+  window.speechSynthesis.speak(utt);
+}
+
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
-async function sendMessage() {
+async function sendMessage(fromVoice = false) {
   const msgInput = document.getElementById('msg-input');
   const sendBtn = document.getElementById('send-btn');
   const text = msgInput.value.trim();
   if (!text || !currentUser) return;
+
+  if (fromVoice) voiceEnabled = true;
 
   appendMessage('user', text);
   msgInput.value = '';
@@ -515,6 +564,7 @@ async function sendMessage() {
     const data = await res.json();
     typing.remove();
     appendMessage('saucer', data.reply);
+    speakReply(data.reply);
     if (data.model) document.getElementById('model-info').textContent = `Powered by ${data.model}`;
 
     conversationHistory.push(

@@ -305,6 +305,29 @@ header h1 {
 #send-btn:hover:not(:disabled) { background: #444; }
 #send-btn:disabled { opacity: 0.4; cursor: default; }
 
+#mic-btn {
+  padding: 10px 14px;
+  border: none;
+  border-radius: 12px;
+  background: #f0ece8;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: background 0.15s;
+  line-height: 1;
+}
+
+#mic-btn:hover { background: #e4deda; }
+
+#mic-btn.mic-btn--recording {
+  background: #e05c5c;
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 #model-info {
   font-size: 0.7rem;
   color: #999;

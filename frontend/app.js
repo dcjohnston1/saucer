@@ -524,6 +524,11 @@ function initVoice() {
     if (micBtn.classList.contains('mic-btn--recording')) {
       recognition.stop();
     } else {
+      // Unlock speechSynthesis during user gesture so iOS allows playback later
+      if (window.speechSynthesis) {
+        const unlock = new SpeechSynthesisUtterance('');
+        window.speechSynthesis.speak(unlock);
+      }
       micBtn.classList.add('mic-btn--recording');
       recognition.start();
     }

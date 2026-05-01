@@ -611,6 +611,32 @@ header h1 {
   color: #5a5045;
 }
 
+.attachment-chip--expandable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.attachment-chip--expandable:hover { opacity: 0.75; }
+
+.attachment-chip--open {
+  background: #d8d0c8;
+}
+
+.attachment-text {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #f9f7f5;
+  border: 1px solid #d8d0c8;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: #3a3530;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
 /* Scrollable main content */
 body { overflow-y: auto; height: auto; }
 #app { height: auto; }

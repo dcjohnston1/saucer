@@ -213,7 +213,22 @@ function buildEmailCard(email) {
       const chip = document.createElement('span');
       chip.className = 'attachment-chip';
       chip.textContent = `📎 ${a.filename}`;
-      chips.appendChild(chip);
+
+      if (a.extracted_text) {
+        chip.classList.add('attachment-chip--expandable');
+        const textEl = document.createElement('div');
+        textEl.className = 'attachment-text hidden';
+        textEl.textContent = a.extracted_text;
+        chip.addEventListener('click', () => {
+          const expanded = !textEl.classList.contains('hidden');
+          textEl.classList.toggle('hidden');
+          chip.classList.toggle('attachment-chip--open', !expanded);
+        });
+        chips.appendChild(chip);
+        chips.appendChild(textEl);
+      } else {
+        chips.appendChild(chip);
+      }
     });
     card.appendChild(chips);
   }

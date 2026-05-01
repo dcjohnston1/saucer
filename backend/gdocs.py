@@ -26,6 +26,16 @@ def read_doc():
                     text += para_element['textRun']['content']
     return text
 
+def complete_task(title):
+    service = get_service()
+    service.documents().batchUpdate(
+        documentId=DOC_ID,
+        body={'requests': [{'replaceAllText': {
+            'containsText': {'text': f'TODO | {title}', 'matchCase': True},
+            'replaceText': f'DONE | {title}'
+        }}]}
+    ).execute()
+
 def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None):
     line = f"TODO | {title} | due:{due} | added:{added}"
     if owner:

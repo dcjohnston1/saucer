@@ -1,6 +1,7 @@
 # Credentials — never commit
 saucer-credentials.json
 *-credentials.json
+client_secret.json
 .env
 *.env
 

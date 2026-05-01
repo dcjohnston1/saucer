@@ -78,6 +78,7 @@ def get_doc():
 @app.route('/emails', methods=['GET'])
 def get_emails():
     from gmail_scanner import scan_emails
+    from email_scanner import scan_emails_for_todos
     from gcs import read_json, write_json
     from datetime import datetime, timedelta, timezone
 
@@ -110,7 +111,64 @@ def get_emails():
     dismissed = set(read_json('saucer-dismissed.json', []))
     visible = [e for e in merged if e['id'] not in dismissed]
 
+    # Scan unscanned emails for to-do proposals (cap at 10 per request)
+    scanned = set(read_json('saucer-scanned.json', []))
+    proposals = read_json('saucer-proposals.json', {})
+    to_scan = [e for e in visible if e['id'] not in scanned][:10]
+    if to_scan:
+        new_proposals = scan_emails_for_todos(to_scan)
+        proposals.update(new_proposals)
+        for e in to_scan:
+            scanned.add(e['id'])
+            if e['id'] not in proposals:
+                proposals[e['id']] = []
+        write_json('saucer-proposals.json', proposals)
+        write_json('saucer-scanned.json', list(scanned))
+
+    # Attach active proposals to each email
+    for e in visible:
+        e['proposals'] = [
+            p for p in proposals.get(e['id'], [])
+            if not p.get('dismissed') and not p.get('accepted')
+        ]
+
     return jsonify({'emails': visible})
+
+
+@app.route('/proposals/<proposal_id>/accept', methods=['POST'])
+def accept_proposal(proposal_id):
+    from gcs import read_json, write_json
+    from mediator import add_todo
+
+    proposals = read_json('saucer-proposals.json', {})
+    for email_id, plist in proposals.items():
+        for p in plist:
+            if p['id'] == proposal_id:
+                add_todo(
+                    title=p['title'],
+                    date_expression=p.get('date_expression') or None,
+                    notes=p.get('notes') or None
+                )
+                p['accepted'] = True
+                write_json('saucer-proposals.json', proposals)
+                return jsonify({'ok': True})
+
+    return jsonify({'error': 'Proposal not found'}), 404
+
+
+@app.route('/proposals/<proposal_id>', methods=['DELETE'])
+def dismiss_proposal(proposal_id):
+    from gcs import read_json, write_json
+
+    proposals = read_json('saucer-proposals.json', {})
+    for email_id, plist in proposals.items():
+        for p in plist:
+            if p['id'] == proposal_id:
+                p['dismissed'] = True
+                write_json('saucer-proposals.json', proposals)
+                return jsonify({'ok': True})
+
+    return jsonify({'error': 'Proposal not found'}), 404
 
 
 @app.route('/emails/<email_id>/dismiss', methods=['DELETE'])

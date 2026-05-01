@@ -1,0 +1,70 @@
+import json
+import uuid
+import os
+import google.generativeai as genai
+
+genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+
+
+def scan_emails_for_todos(emails):
+    """
+    Scan a list of email objects for household action items.
+    Returns dict keyed by email_id -> list of proposal dicts.
+    """
+    if not emails:
+        return {}
+
+    blocks = []
+    for e in emails:
+        body = (e.get('body') or e.get('snippet', ''))[:500]
+        block = f"EMAIL_ID: {e['id']}\nFrom: {e['sender']}\nSubject: {e['subject']}\nBody: {body}"
+        for a in e.get('attachments', []):
+            if a.get('extracted_text'):
+                block += f"\nAttachment ({a['filename']}): {a['extracted_text'][:2000]}"
+        blocks.append(block)
+
+    prompt = """You are a household assistant. Review the following emails and identify genuine action items for the household — bills to pay, appointments to schedule, renewals, school events, service reminders, etc. Skip marketing, newsletters, and receipts for things already completed.
+
+For each action item found, return a JSON array. Return ONLY valid JSON, no other text.
+
+Format:
+[
+  {
+    "email_id": "<the EMAIL_ID value from the email>",
+    "title": "<concise action item, under 60 chars>",
+    "notes": "<brief context, or null>",
+    "date_expression": "<natural language date if mentioned, e.g. 'May 15' or 'this month', or null>"
+  }
+]
+
+If no action items are found, return [].
+
+Emails to review:
+
+""" + "\n\n---\n\n".join(blocks)
+
+    try:
+        model = genai.GenerativeModel(
+            model_name='gemini-2.5-flash',
+            generation_config={'response_mime_type': 'application/json'}
+        )
+        response = model.generate_content(prompt)
+        items = json.loads(response.text)
+
+        result = {}
+        for item in items:
+            eid = item.get('email_id')
+            if not eid:
+                continue
+            result.setdefault(eid, []).append({
+                'id': str(uuid.uuid4()),
+                'title': item.get('title', ''),
+                'notes': item.get('notes') or '',
+                'date_expression': item.get('date_expression') or '',
+                'dismissed': False,
+                'accepted': False,
+            })
+        return result
+    except Exception as e:
+        print(f"Email scan error: {e}")
+        return {}

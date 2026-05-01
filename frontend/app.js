@@ -206,6 +206,26 @@ function buildEmailCard(email) {
     });
   }
 
+  if (email.proposals && email.proposals.length > 0) {
+    const proposalsEl = document.createElement('div');
+    proposalsEl.className = 'email-proposals';
+    email.proposals.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'proposal-row';
+      row.innerHTML = `
+        <span class="proposal-title">💡 ${escapeHtml(p.title)}</span>
+        <div class="proposal-actions">
+          <button class="proposal-add-btn">Add</button>
+          <button class="proposal-dismiss-btn">Dismiss</button>
+        </div>
+      `;
+      row.querySelector('.proposal-add-btn').addEventListener('click', () => acceptProposal(p.id, row));
+      row.querySelector('.proposal-dismiss-btn').addEventListener('click', () => dismissProposal(p.id, row));
+      proposalsEl.appendChild(row);
+    });
+    card.appendChild(proposalsEl);
+  }
+
   if (email.attachments && email.attachments.length > 0) {
     const chips = document.createElement('div');
     chips.className = 'email-attachments';
@@ -392,6 +412,24 @@ async function dismissEmail(emailId) {
     await fetch(`${BACKEND_URL}/emails/${emailId}/dismiss`, { method: 'DELETE' });
   } catch (err) {
     console.error('Failed to dismiss email:', err);
+  }
+}
+
+async function acceptProposal(proposalId, rowEl) {
+  try {
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, { method: 'POST' });
+    rowEl.remove();
+  } catch (err) {
+    console.error('Failed to accept proposal:', err);
+  }
+}
+
+async function dismissProposal(proposalId, rowEl) {
+  try {
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
+    rowEl.remove();
+  } catch (err) {
+    console.error('Failed to dismiss proposal:', err);
   }
 }
 

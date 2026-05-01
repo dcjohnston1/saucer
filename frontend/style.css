@@ -175,6 +175,7 @@ header h1 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  font-family: 'Courier New', Courier, monospace;
 }
 
 .header-logo {

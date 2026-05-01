@@ -68,6 +68,13 @@ window.addEventListener('DOMContentLoaded', () => {
   // Senders screen
   document.getElementById('senders-back-btn').addEventListener('click', closeSendersScreen);
 
+  // Proposals screen
+  document.getElementById('menu-proposals').addEventListener('click', () => {
+    closeDrawer();
+    openProposalsScreen();
+  });
+  document.getElementById('proposals-back-btn').addEventListener('click', closeProposalsScreen);
+
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');
   if (stored) {
@@ -90,6 +97,7 @@ function showMainApp(user) {
   document.getElementById('user-name').textContent = user.name;
   loadEmailFilters();
   loadHomeList();
+  loadProposals();
 }
 
 // ── Email Filters ─────────────────────────────────────────────────────────────
@@ -206,26 +214,6 @@ function buildEmailCard(email) {
     });
   }
 
-  if (email.proposals && email.proposals.length > 0) {
-    const proposalsEl = document.createElement('div');
-    proposalsEl.className = 'email-proposals';
-    email.proposals.forEach(p => {
-      const row = document.createElement('div');
-      row.className = 'proposal-row';
-      row.innerHTML = `
-        <span class="proposal-title">💡 ${escapeHtml(p.title)}</span>
-        <div class="proposal-actions">
-          <button class="proposal-add-btn">Add</button>
-          <button class="proposal-dismiss-btn">Dismiss</button>
-        </div>
-      `;
-      row.querySelector('.proposal-add-btn').addEventListener('click', () => acceptProposal(p.id, row));
-      row.querySelector('.proposal-dismiss-btn').addEventListener('click', () => dismissProposal(p.id, row));
-      proposalsEl.appendChild(row);
-    });
-    card.appendChild(proposalsEl);
-  }
-
   if (email.attachments && email.attachments.length > 0) {
     const chips = document.createElement('div');
     chips.className = 'email-attachments';
@@ -278,6 +266,60 @@ async function loadEmails(filters) {
     data.emails.forEach(email => emailsContent.appendChild(buildEmailCard(email)));
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
+  }
+}
+
+// ── Proposals ────────────────────────────────────────────────────────────────
+
+function openProposalsScreen() {
+  document.getElementById('proposals-screen').classList.remove('hidden');
+}
+
+function closeProposalsScreen() {
+  document.getElementById('proposals-screen').classList.add('hidden');
+}
+
+async function loadProposals() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/proposals`);
+    const data = await res.json();
+    const proposals = data.proposals || [];
+
+    const badge = document.getElementById('proposals-badge');
+    if (proposals.length > 0) {
+      badge.textContent = proposals.length;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+
+    const list = document.getElementById('proposals-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    if (proposals.length === 0) {
+      list.innerHTML = '<div class="empty-state">No suggestions right now.</div>';
+      return;
+    }
+
+    proposals.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'proposal-card';
+      card.innerHTML = `
+        <div class="proposal-source">${escapeHtml(p.email_sender)} &mdash; ${escapeHtml(p.email_subject)}</div>
+        <div class="proposal-title">💡 ${escapeHtml(p.title)}</div>
+        ${p.notes ? `<div class="proposal-notes">${escapeHtml(p.notes)}</div>` : ''}
+        <div class="proposal-actions">
+          <button class="proposal-add-btn">Add to List</button>
+          <button class="proposal-dismiss-btn">Dismiss</button>
+        </div>
+      `;
+      card.querySelector('.proposal-add-btn').addEventListener('click', () => acceptProposal(p.id, card));
+      card.querySelector('.proposal-dismiss-btn').addEventListener('click', () => dismissProposal(p.id, card));
+      list.appendChild(card);
+    });
+  } catch (err) {
+    console.error('Failed to load proposals:', err);
   }
 }
 
@@ -415,19 +457,21 @@ async function dismissEmail(emailId) {
   }
 }
 
-async function acceptProposal(proposalId, rowEl) {
+async function acceptProposal(proposalId, cardEl) {
   try {
     await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, { method: 'POST' });
-    rowEl.remove();
+    cardEl.remove();
+    loadProposals();
   } catch (err) {
     console.error('Failed to accept proposal:', err);
   }
 }
 
-async function dismissProposal(proposalId, rowEl) {
+async function dismissProposal(proposalId, cardEl) {
   try {
     await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
-    rowEl.remove();
+    cardEl.remove();
+    loadProposals();
   } catch (err) {
     console.error('Failed to dismiss proposal:', err);
   }

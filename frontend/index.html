@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=9.0" />
+  <link rel="stylesheet" href="style.css?v=10.0" />
   <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
 <body>
@@ -22,6 +22,7 @@
       <div class="drawer-header">Menu</div>
       <ul class="drawer-menu">
         <li class="drawer-item" id="menu-senders">Monitored Senders</li>
+        <li class="drawer-item" id="menu-proposals">Suggested To-Dos <span id="proposals-badge" class="drawer-badge hidden">0</span></li>
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
         <li class="drawer-item drawer-item--soon">About</li>
@@ -39,6 +40,16 @@
           <input id="new-sender-input" type="email" placeholder="Add email address..." />
           <button id="add-sender-btn">Add</button>
         </div>
+      </div>
+    </div>
+
+    <div id="proposals-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="proposals-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title">Suggested To-Dos</span>
+      </div>
+      <div class="screen-body">
+        <div id="proposals-list"></div>
       </div>
     </div>
 
@@ -79,6 +90,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=7.0"></script>
+  <script src="app.js?v=8.0"></script>
 </body>
 </html>

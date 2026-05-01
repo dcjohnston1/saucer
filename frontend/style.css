@@ -111,6 +111,20 @@ header {
 
 .drawer-item--soon:hover { background: none; }
 
+.drawer-item { position: relative; }
+
+.drawer-badge {
+  display: inline-block;
+  background: #e05c5c;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 /* Senders screen overlay */
 .screen {
   position: fixed;
@@ -648,6 +662,39 @@ header h1 {
 
 .proposal-add-btn:hover { opacity: 0.85; }
 .proposal-dismiss-btn:hover { opacity: 0.7; }
+
+.proposal-card {
+  background: #fff;
+  border: 1px solid #e0d9d2;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proposal-source {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.proposal-card .proposal-title {
+  font-size: 0.9rem;
+  color: #2b2b2b;
+  font-weight: 500;
+}
+
+.proposal-notes {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.proposal-card .proposal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
 
 .email-attachments {
   display: flex;

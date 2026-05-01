@@ -125,14 +125,32 @@ def get_emails():
         write_json('saucer-proposals.json', proposals)
         write_json('saucer-scanned.json', list(scanned))
 
-    # Attach active proposals to each email
-    for e in visible:
-        e['proposals'] = [
-            p for p in proposals.get(e['id'], [])
-            if not p.get('dismissed') and not p.get('accepted')
-        ]
-
     return jsonify({'emails': visible})
+
+
+@app.route('/proposals', methods=['GET'])
+def get_proposals():
+    from gcs import read_json
+
+    proposals = read_json('saucer-proposals.json', {})
+    emails = read_json('saucer-emails.json', [])
+    email_meta = {e['id']: {'subject': e.get('subject', ''), 'sender': e.get('sender', '')} for e in emails}
+
+    active = []
+    for email_id, plist in proposals.items():
+        meta = email_meta.get(email_id, {})
+        for p in plist:
+            if not p.get('dismissed') and not p.get('accepted'):
+                active.append({
+                    'id': p['id'],
+                    'title': p['title'],
+                    'notes': p.get('notes', ''),
+                    'date_expression': p.get('date_expression', ''),
+                    'email_subject': meta.get('subject', ''),
+                    'email_sender': meta.get('sender', ''),
+                })
+
+    return jsonify({'proposals': active})
 
 
 @app.route('/proposals/<proposal_id>/accept', methods=['POST'])

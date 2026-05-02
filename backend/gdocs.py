@@ -36,7 +36,17 @@ def complete_task(title):
         }}]}
     ).execute()
 
-def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None):
+def _normalize(title):
+    return title.strip().lower()
+
+def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None, assignee=None):
+    existing = read_doc()
+    title_norm = _normalize(title)
+    for line in existing.split('\n'):
+        parts = [p.strip() for p in line.split('|')]
+        if len(parts) > 1 and _normalize(parts[1]) == title_norm:
+            return  # already in doc
+
     line = f"TODO | {title} | due:{due} | added:{added}"
     if owner:
         line += f" | owner:{owner}"
@@ -50,6 +60,8 @@ def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recu
         line += f" | urgency:{urgency}"
     if notes:
         line += f" | notes:{notes}"
+    if assignee:
+        line += f" | assignee:{assignee}"
     line += "\n"
 
     service = get_service()

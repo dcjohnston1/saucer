@@ -89,7 +89,7 @@ def _extract_attachments(payload, service, user_id, msg_id):
     return attachments
 
 
-def scan_emails(sender_filter=None, after_timestamp=None):
+def scan_emails(sender_filter=None, keyword_filter=None, after_timestamp=None):
     service = get_gmail_service()
     if not service:
         return []
@@ -97,11 +97,18 @@ def scan_emails(sender_filter=None, after_timestamp=None):
     user_id = 'me'
     try:
         query_parts = []
-        if isinstance(sender_filter, list):
-            if sender_filter:
-                query_parts.append('(' + ' OR '.join(f'from:{s}' for s in sender_filter) + ')')
+
+        match_clauses = []
+        if isinstance(sender_filter, list) and sender_filter:
+            match_clauses.extend(f'from:{s}' for s in sender_filter)
         elif sender_filter:
-            query_parts.append(f'from:{sender_filter}')
+            match_clauses.append(f'from:{sender_filter}')
+        if isinstance(keyword_filter, list) and keyword_filter:
+            match_clauses.extend(keyword_filter)
+        elif keyword_filter:
+            match_clauses.append(keyword_filter)
+        if match_clauses:
+            query_parts.append('(' + ' OR '.join(match_clauses) + ')')
 
         if after_timestamp:
             query_parts.append(f'after:{int(after_timestamp)}')

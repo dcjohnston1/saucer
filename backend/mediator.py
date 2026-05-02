@@ -116,7 +116,7 @@ def _human_readable(status, value):
 
 def add_todo(title: str, date_expression: str = None, notes: str = None,
              owner: str = None, priority: str = None, recurrence: str = None,
-             location: str = None, urgency: str = None):
+             location: str = None, urgency: str = None, assignee: str = None):
     """Add a to-do item to the shared household Google Doc.
 
     Args:
@@ -141,7 +141,7 @@ def add_todo(title: str, date_expression: str = None, notes: str = None,
     else:
         added = today.strftime("%Y-%m-%d")
         due = value if status in ("date", "range") else "none"
-        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency)
+        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency, assignee)
         human = _human_readable(status, value)
         return {
             "status": "ok",

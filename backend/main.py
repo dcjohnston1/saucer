@@ -49,7 +49,8 @@ def get_doc():
             'recurrence': None,
             'location': None,
             'urgency': None,
-            'notes': None
+            'notes': None,
+            'assignee': None,
         }
 
         for part in parts[2:]:
@@ -69,6 +70,8 @@ def get_doc():
                 task['urgency'] = part[8:]
             elif part.startswith('notes:'):
                 task['notes'] = part[6:]
+            elif part.startswith('assignee:'):
+                task['assignee'] = part[9:]
 
         tasks.append(task)
 
@@ -94,8 +97,12 @@ def get_emails():
     else:
         after_ts = last_sync
 
+    kw_doc = db.collection('settings').document('keyword_filters').get()
+    keywords = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
+
     new_emails = scan_emails(
         sender_filter=filters if filters else None,
+        keyword_filter=keywords if keywords else None,
         after_timestamp=after_ts
     )
 
@@ -117,8 +124,15 @@ def get_emails():
     to_scan = [e for e in visible if e['id'] not in scanned][:10]
     if to_scan:
         new_proposals = scan_emails_for_todos(to_scan)
-        # Deduplicate: skip proposals whose title already exists anywhere
-        existing_titles = {p['title'].strip().lower() for plist in proposals.values() for p in plist}
+        # Deduplicate: skip proposals whose title already exists in proposals or the Google Doc
+        from gdocs import read_doc as _read_doc
+        doc_content = _read_doc()
+        doc_titles = set()
+        for _line in doc_content.split('\n'):
+            _parts = [x.strip() for x in _line.split('|')]
+            if len(_parts) > 1 and _line.strip():
+                doc_titles.add(_parts[1].strip().lower())
+        existing_titles = {p['title'].strip().lower() for plist in proposals.values() for p in plist} | doc_titles
         for email_id, plist in new_proposals.items():
             deduped = []
             for p in plist:
@@ -167,6 +181,9 @@ def accept_proposal(proposal_id):
     from mediator import add_todo
     from gdocs import read_doc
 
+    data = request.get_json() or {}
+    assignee = data.get('assignee') or None
+
     proposals = read_json('saucer-proposals.json', {})
     for email_id, plist in proposals.items():
         for p in plist:
@@ -182,7 +199,8 @@ def accept_proposal(proposal_id):
                     add_todo(
                         title=p['title'],
                         date_expression=p.get('date_expression') or None,
-                        notes=p.get('notes') or None
+                        notes=p.get('notes') or None,
+                        assignee=assignee
                     )
                 p['accepted'] = True
                 write_json('saucer-proposals.json', proposals)
@@ -253,6 +271,36 @@ def remove_email_filter(email):
     db = get_db()
     db.collection('settings').document('email_filters').set(
         {'addresses': firestore.ArrayRemove([email])}, merge=True
+    )
+    return jsonify({'ok': True})
+
+
+@app.route('/keyword-filters', methods=['GET'])
+def get_keyword_filters():
+    db = get_db()
+    doc = db.collection('settings').document('keyword_filters').get()
+    keywords = doc.to_dict().get('keywords', []) if doc.exists else []
+    return jsonify({'keywords': keywords})
+
+
+@app.route('/keyword-filters', methods=['POST'])
+def add_keyword_filter():
+    data = request.get_json()
+    keyword = data.get('keyword', '').strip().lower()
+    if not keyword:
+        return jsonify({'error': 'Missing keyword'}), 400
+    db = get_db()
+    db.collection('settings').document('keyword_filters').set(
+        {'keywords': firestore.ArrayUnion([keyword])}, merge=True
+    )
+    return jsonify({'ok': True})
+
+
+@app.route('/keyword-filters/<path:keyword>', methods=['DELETE'])
+def remove_keyword_filter(keyword):
+    db = get_db()
+    db.collection('settings').document('keyword_filters').set(
+        {'keywords': firestore.ArrayRemove([keyword])}, merge=True
     )
     return jsonify({'ok': True})
 

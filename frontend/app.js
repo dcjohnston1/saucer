@@ -52,6 +52,10 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('new-sender-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addSender();
   });
+  document.getElementById('add-keyword-btn').addEventListener('click', addKeyword);
+  document.getElementById('new-keyword-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addKeyword();
+  });
   document.getElementById('send-btn').addEventListener('click', sendMessage);
   document.getElementById('msg-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -110,6 +114,7 @@ function showMainApp(user) {
   document.getElementById('hamburger-btn').classList.remove('hidden');
   document.getElementById('user-name').textContent = user.name;
   loadEmailFilters();
+  loadKeywordFilters();
   loadProposals();
   initVoice();
 }
@@ -191,6 +196,61 @@ async function removeSender(email) {
     loadEmailFilters();
   } catch (err) {
     alert(`Failed to remove sender: ${err.message}`);
+  }
+}
+
+async function loadKeywordFilters() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/keyword-filters`);
+    const data = await res.json();
+    renderKeywords(data.keywords || []);
+  } catch (err) {
+    console.error('Failed to load keywords:', err);
+  }
+}
+
+function renderKeywords(keywords) {
+  const list = document.getElementById('keywords-list');
+  list.innerHTML = '';
+  if (keywords.length === 0) {
+    list.innerHTML = '<p class="empty-state" style="padding: 4px 0 8px; font-size: 0.85rem;">No keywords added yet.</p>';
+    return;
+  }
+  keywords.forEach(kw => {
+    const row = document.createElement('div');
+    row.className = 'sender-row';
+    row.innerHTML = `
+      <span>${escapeHtml(kw)}</span>
+      <button class="remove-sender-btn" data-kw="${escapeHtml(kw)}">Remove</button>
+    `;
+    row.querySelector('.remove-sender-btn').addEventListener('click', () => removeKeyword(kw));
+    list.appendChild(row);
+  });
+}
+
+async function addKeyword() {
+  const input = document.getElementById('new-keyword-input');
+  const keyword = input.value.trim().toLowerCase();
+  if (!keyword) return;
+  try {
+    await fetch(`${BACKEND_URL}/keyword-filters`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword })
+    });
+    input.value = '';
+    loadKeywordFilters();
+  } catch (err) {
+    alert(`Failed to add keyword: ${err.message}`);
+  }
+}
+
+async function removeKeyword(keyword) {
+  try {
+    await fetch(`${BACKEND_URL}/keyword-filters/${encodeURIComponent(keyword)}`, { method: 'DELETE' });
+    loadKeywordFilters();
+  } catch (err) {
+    alert(`Failed to remove keyword: ${err.message}`);
   }
 }
 

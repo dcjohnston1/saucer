@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=17.0" />
+  <link rel="stylesheet" href="style.css?v=17.1" />
   <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
 <body>
@@ -21,10 +21,9 @@
     <nav id="side-drawer" class="side-drawer">
       <div class="drawer-header">Menu</div>
       <ul class="drawer-menu">
-        <li class="drawer-item" id="menu-senders">Monitored Senders</li>
+        <li class="drawer-item" id="menu-senders">Email Filters</li>
         <li class="drawer-item" id="menu-proposals">Suggested To-Dos <span id="proposals-badge" class="drawer-badge hidden">0</span></li>
         <li class="drawer-item" id="menu-list">Shared List</li>
-        <li class="drawer-item" id="menu-resync">Sync History (90 days)</li>
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
         <li class="drawer-item drawer-item--soon">About</li>
@@ -35,9 +34,10 @@
     <div id="senders-screen" class="screen hidden">
       <div class="screen-header">
         <button id="senders-back-btn" class="back-btn">&#8592; Back</button>
-        <span class="screen-title">Monitored Senders</span>
+        <span class="screen-title">Email Filters</span>
       </div>
       <div class="screen-body">
+        <button id="resync-btn" class="resync-btn">Sync history (last 90 days)</button>
         <div id="senders-list"></div>
         <div id="add-sender-row">
           <input id="new-sender-input" type="email" placeholder="Add email address..." />
@@ -120,6 +120,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=11.0"></script>
+  <script src="app.js?v=11.1"></script>
 </body>
 </html>

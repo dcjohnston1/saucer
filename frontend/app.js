@@ -93,11 +93,8 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('list-back-btn').addEventListener('click', closeListScreen);
 
-  // Resync
-  document.getElementById('menu-resync').addEventListener('click', async () => {
-    closeDrawer();
-    resyncEmails();
-  });
+  // Resync button inside Email Filters screen
+  document.getElementById('resync-btn').addEventListener('click', () => resyncEmails());
 
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');

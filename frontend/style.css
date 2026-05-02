@@ -534,6 +534,22 @@ mark.search-highlight {
 
 #new-sender-input:focus { outline: none; border-color: #aaa; }
 
+.resync-btn {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  border: 1.5px solid #d0d0d0;
+  border-radius: 10px;
+  background: #f5f5f5;
+  color: #333;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.resync-btn:hover { background: #e8e8e8; }
+
 #add-sender-btn {
   padding: 10px 16px;
   border: none;

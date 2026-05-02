@@ -254,6 +254,38 @@ async function removeKeyword(keyword) {
   }
 }
 
+// ── Search highlight helpers ──────────────────────────────────────────────────
+
+const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'BUTTON', 'MARK']);
+
+function highlightSearchTerm(node, query) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent;
+    const idx = text.toLowerCase().indexOf(query);
+    if (idx === -1) return;
+    const before = document.createTextNode(text.slice(0, idx));
+    const mark = document.createElement('mark');
+    mark.className = 'search-highlight';
+    mark.textContent = text.slice(idx, idx + query.length);
+    const rest = document.createTextNode(text.slice(idx + query.length));
+    node.parentNode.replaceChild(before, node);
+    before.parentNode.insertBefore(mark, before.nextSibling);
+    mark.parentNode.insertBefore(rest, mark.nextSibling);
+    highlightSearchTerm(rest, query);
+  } else if (node.nodeType === Node.ELEMENT_NODE && !SKIP_TAGS.has(node.tagName)) {
+    Array.from(node.childNodes).forEach(child => highlightSearchTerm(child, query));
+  }
+}
+
+function removeSearchHighlights(node) {
+  node.querySelectorAll('mark.search-highlight').forEach(mark => {
+    const parent = mark.parentNode;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    parent.removeChild(mark);
+    parent.normalize();
+  });
+}
+
 // ── Emails ────────────────────────────────────────────────────────────────────
 
 function escapeHtml(str) {
@@ -366,8 +398,15 @@ async function loadEmails(filters) {
     searchInput.oninput = () => {
       const q = searchInput.value.trim().toLowerCase();
       emailsContent.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
-        const text = wrapper.textContent.toLowerCase();
-        wrapper.style.display = q && !text.includes(q) ? 'none' : '';
+        const card = wrapper.querySelector('.email-card');
+        removeSearchHighlights(card);
+        if (!q) { wrapper.style.display = ''; return; }
+        if (!card.textContent.toLowerCase().includes(q)) {
+          wrapper.style.display = 'none';
+        } else {
+          wrapper.style.display = '';
+          highlightSearchTerm(card, q);
+        }
       });
     };
   } catch (err) {

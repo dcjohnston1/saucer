@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=13.0" />
+  <link rel="stylesheet" href="style.css?v=14.0" />
   <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
 <body>
@@ -27,6 +27,7 @@
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
         <li class="drawer-item drawer-item--soon">About</li>
+        <li class="drawer-item" id="menu-members">Members</li>
       </ul>
     </nav>
 
@@ -51,6 +52,16 @@
       </div>
       <div class="screen-body">
         <div id="list-screen-content"></div>
+      </div>
+    </div>
+
+    <div id="members-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="members-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title">Members</span>
+      </div>
+      <div class="screen-body">
+        <div id="members-list"></div>
       </div>
     </div>
 
@@ -81,6 +92,10 @@
         <button id="sign-out-btn">Sign out</button>
       </div>
 
+      <div id="email-search-bar">
+        <input id="email-search" type="search" placeholder="Search emails…" autocomplete="off" />
+      </div>
+
       <div id="emails-section">
         <h3>Recent Emails</h3>
         <div id="emails-content"><div class="loading">Loading emails...</div></div>
@@ -97,6 +112,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=10.1"></script>
+  <script src="app.js?v=10.5"></script>
 </body>
 </html>

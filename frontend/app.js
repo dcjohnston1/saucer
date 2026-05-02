@@ -300,6 +300,16 @@ async function loadEmails(filters) {
     }
     emailsContent.innerHTML = '';
     data.emails.forEach(email => emailsContent.appendChild(buildEmailCard(email)));
+
+    const searchInput = document.getElementById('email-search');
+    searchInput.value = '';
+    searchInput.oninput = () => {
+      const q = searchInput.value.trim().toLowerCase();
+      emailsContent.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
+        const text = wrapper.textContent.toLowerCase();
+        wrapper.style.display = q && !text.includes(q) ? 'none' : '';
+      });
+    };
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
   }

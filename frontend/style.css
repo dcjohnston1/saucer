@@ -801,10 +801,12 @@ header h1 {
 .assign-avatar:hover { background: rgba(255,255,255,0.4); }
 
 .assign-avatar--both {
-  background: linear-gradient(to right, #2b2b2b 50%, #4a90d9 50%);
+  background: linear-gradient(to right, #2b2b2b 50%, #e0883a 50%);
   gap: 2px;
   font-size: 0.7rem;
   letter-spacing: -1px;
+  border: 2px solid rgba(255,255,255,0.7);
+  box-sizing: border-box;
 }
 .assign-avatar--both:hover { filter: brightness(1.15); }
 

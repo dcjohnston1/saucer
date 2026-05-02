@@ -275,6 +275,19 @@ def remove_email_filter(email):
     return jsonify({'ok': True})
 
 
+@app.route('/emails/search', methods=['GET'])
+def search_emails():
+    from gmail_scanner import scan_emails
+    from gcs import read_json
+    q = request.args.get('q', '').strip()
+    if not q or len(q) < 2:
+        return jsonify({'emails': []})
+    emails = scan_emails(keyword_filter=[q])
+    dismissed = set(read_json('saucer-dismissed.json', []))
+    visible = [e for e in emails if e['id'] not in dismissed]
+    return jsonify({'emails': visible[:20]})
+
+
 @app.route('/keyword-filters', methods=['GET'])
 def get_keyword_filters():
     db = get_db()

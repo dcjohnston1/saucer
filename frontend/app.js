@@ -395,19 +395,54 @@ async function loadEmails(filters) {
 
     const searchInput = document.getElementById('email-search');
     searchInput.value = '';
-    searchInput.oninput = () => {
-      const q = searchInput.value.trim().toLowerCase();
-      emailsContent.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
+    const originalWrappers = Array.from(emailsContent.children);
+    let searchTimeout = null;
+
+    function restoreOriginals(q) {
+      emailsContent.innerHTML = '';
+      originalWrappers.forEach(wrapper => {
         const card = wrapper.querySelector('.email-card');
         removeSearchHighlights(card);
-        if (!q) { wrapper.style.display = ''; return; }
-        if (!card.textContent.toLowerCase().includes(q)) {
-          wrapper.style.display = 'none';
-        } else {
-          wrapper.style.display = '';
-          highlightSearchTerm(card, q);
+        wrapper.style.display = '';
+        if (q) {
+          if (!card.textContent.toLowerCase().includes(q)) {
+            wrapper.style.display = 'none';
+          } else {
+            highlightSearchTerm(card, q);
+          }
         }
+        emailsContent.appendChild(wrapper);
       });
+    }
+
+    searchInput.oninput = () => {
+      clearTimeout(searchTimeout);
+      const q = searchInput.value.trim().toLowerCase();
+
+      if (q.length < 3) {
+        restoreOriginals(q);
+        return;
+      }
+
+      searchTimeout = setTimeout(async () => {
+        emailsContent.innerHTML = '<div class="loading">Searching Gmail…</div>';
+        try {
+          const res = await fetch(`${BACKEND_URL}/emails/search?q=${encodeURIComponent(q)}`);
+          const data = await res.json();
+          emailsContent.innerHTML = '';
+          if (!data.emails || data.emails.length === 0) {
+            emailsContent.innerHTML = '<div class="empty-state">No emails found.</div>';
+            return;
+          }
+          data.emails.forEach(email => {
+            const wrapper = buildEmailCard(email);
+            highlightSearchTerm(wrapper.querySelector('.email-card'), q);
+            emailsContent.appendChild(wrapper);
+          });
+        } catch (err) {
+          emailsContent.innerHTML = `<div class="empty-state">Search failed: ${err.message}</div>`;
+        }
+      }, 500);
     };
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;

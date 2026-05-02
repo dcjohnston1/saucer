@@ -11,6 +11,27 @@ def get_db():
     return firestore.Client(project='mediationmate')
 
 
+def _backfill(sender_filter=None, keyword_filter=None):
+    """Scan the last 30 days for a newly added sender or keyword and merge into stored emails."""
+    try:
+        from gmail_scanner import scan_emails
+        from gcs import read_json, write_json
+        from datetime import datetime, timedelta, timezone
+        after_ts = (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
+        new_emails = scan_emails(
+            sender_filter=sender_filter,
+            keyword_filter=keyword_filter,
+            after_timestamp=after_ts
+        )
+        if new_emails:
+            stored = read_json('saucer-emails.json', [])
+            new_ids = {e['id'] for e in new_emails}
+            merged = new_emails + [e for e in stored if e['id'] not in new_ids]
+            write_json('saucer-emails.json', merged)
+    except Exception as e:
+        print(f"Backfill error: {e}")
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
     data = request.get_json()
@@ -263,6 +284,7 @@ def add_email_filter():
     db.collection('settings').document('email_filters').set(
         {'addresses': firestore.ArrayUnion([email])}, merge=True
     )
+    _backfill(sender_filter=[email])
     return jsonify({'ok': True})
 
 
@@ -306,6 +328,7 @@ def add_keyword_filter():
     db.collection('settings').document('keyword_filters').set(
         {'keywords': firestore.ArrayUnion([keyword])}, merge=True
     )
+    _backfill(keyword_filter=[keyword])
     return jsonify({'ok': True})
 
 

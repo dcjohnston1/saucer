@@ -532,7 +532,7 @@ function addSwipeToAssign(wrapper, card, proposalId) {
   let deltaX = 0;
   let dragging = false;
   let snapped = false;
-  const SNAP_WIDTH = 120;
+  const SNAP_WIDTH = 164;
 
   function snapBack() {
     card.style.transition = 'transform 0.25s ease';

@@ -12,12 +12,12 @@ def get_db():
 
 
 def _backfill(sender_filter=None, keyword_filter=None):
-    """Scan the last 30 days for a newly added sender or keyword and merge into stored emails."""
+    """Scan the last 90 days for a newly added sender or keyword and merge into stored emails."""
     try:
         from gmail_scanner import scan_emails
         from gcs import read_json, write_json
         from datetime import datetime, timedelta, timezone
-        after_ts = (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
+        after_ts = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
         new_emails = scan_emails(
             sender_filter=sender_filter,
             keyword_filter=keyword_filter,
@@ -114,7 +114,7 @@ def get_emails():
     last_sync = config.get('last_sync_timestamp')
 
     if last_sync is None:
-        after_ts = (datetime.now(timezone.utc) - timedelta(days=30)).timestamp()
+        after_ts = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
     else:
         after_ts = last_sync
 
@@ -169,6 +169,41 @@ def get_emails():
         write_json('saucer-scanned.json', list(scanned))
 
     return jsonify({'emails': visible})
+
+
+@app.route('/emails/resync', methods=['POST'])
+def resync_emails():
+    """Force a 90-day re-scan regardless of last_sync_timestamp."""
+    from gmail_scanner import scan_emails
+    from email_scanner import scan_emails_for_todos
+    from gcs import read_json, write_json
+    from datetime import datetime, timedelta, timezone
+
+    db = get_db()
+    doc = db.collection('settings').document('email_filters').get()
+    filters = doc.to_dict().get('addresses', []) if doc.exists else []
+    kw_doc = db.collection('settings').document('keyword_filters').get()
+    keywords = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
+
+    after_ts = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
+    new_emails = scan_emails(
+        sender_filter=filters if filters else None,
+        keyword_filter=keywords if keywords else None,
+        after_timestamp=after_ts
+    )
+
+    stored = read_json('saucer-emails.json', [])
+    new_ids = {e['id'] for e in new_emails}
+    merged = new_emails + [e for e in stored if e['id'] not in new_ids]
+    write_json('saucer-emails.json', merged)
+
+    config = read_json('saucer-config.json', {})
+    config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
+    write_json('saucer-config.json', config)
+
+    dismissed = set(read_json('saucer-dismissed.json', []))
+    visible = [e for e in merged if e['id'] not in dismissed]
+    return jsonify({'emails': visible, 'synced': len(new_emails)})
 
 
 @app.route('/proposals', methods=['GET'])

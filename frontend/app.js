@@ -93,6 +93,12 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('list-back-btn').addEventListener('click', closeListScreen);
 
+  // Resync
+  document.getElementById('menu-resync').addEventListener('click', async () => {
+    closeDrawer();
+    resyncEmails();
+  });
+
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');
   if (stored) {
@@ -374,6 +380,25 @@ function buildEmailCard(email) {
   return wrapper;
 }
 
+async function resyncEmails() {
+  const emailsContent = document.getElementById('emails-content');
+  emailsContent.innerHTML = '<div class="loading">Syncing 90 days of history…</div>';
+  try {
+    const res = await fetch(`${BACKEND_URL}/emails/resync`, { method: 'POST' });
+    if (!res.ok) throw new Error('Resync failed');
+    const data = await res.json();
+    emailsContent.innerHTML = '';
+    if (!data.emails || data.emails.length === 0) {
+      emailsContent.innerHTML = '<div class="empty-state">No emails found.</div>';
+      return;
+    }
+    data.emails.forEach(email => emailsContent.appendChild(buildEmailCard(email)));
+    wireSearchInput(emailsContent);
+  } catch (err) {
+    emailsContent.textContent = `Error: ${err.message}`;
+  }
+}
+
 async function loadEmails(filters) {
   const emailsContent = document.getElementById('emails-content');
   if (!filters || filters.length === 0) {
@@ -392,29 +417,32 @@ async function loadEmails(filters) {
     }
     emailsContent.innerHTML = '';
     data.emails.forEach(email => emailsContent.appendChild(buildEmailCard(email)));
-
-    const searchInput = document.getElementById('email-search');
-    searchInput.value = '';
-    searchInput.oninput = () => {
-      const q = searchInput.value.trim().toLowerCase();
-      emailsContent.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
-        const card = wrapper.querySelector('.email-card');
-        removeSearchHighlights(card);
-        if (!q) {
-          wrapper.style.display = '';
-          return;
-        }
-        if (!card.textContent.toLowerCase().includes(q)) {
-          wrapper.style.display = 'none';
-        } else {
-          wrapper.style.display = '';
-          highlightSearchTerm(card, q);
-        }
-      });
-    };
+    wireSearchInput(emailsContent);
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
   }
+}
+
+function wireSearchInput(emailsContent) {
+  const searchInput = document.getElementById('email-search');
+  searchInput.value = '';
+  searchInput.oninput = () => {
+    const q = searchInput.value.trim().toLowerCase();
+    emailsContent.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
+      const card = wrapper.querySelector('.email-card');
+      removeSearchHighlights(card);
+      if (!q) {
+        wrapper.style.display = '';
+        return;
+      }
+      if (!card.textContent.toLowerCase().includes(q)) {
+        wrapper.style.display = 'none';
+      } else {
+        wrapper.style.display = '';
+        highlightSearchTerm(card, q);
+      }
+    });
+  };
 }
 
 // ── Proposals ────────────────────────────────────────────────────────────────

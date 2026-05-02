@@ -75,6 +75,13 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('proposals-back-btn').addEventListener('click', closeProposalsScreen);
 
+  // Members screen
+  document.getElementById('menu-members').addEventListener('click', () => {
+    closeDrawer();
+    openMembersScreen();
+  });
+  document.getElementById('members-back-btn').addEventListener('click', closeMembersScreen);
+
   // List screen
   document.getElementById('menu-list').addEventListener('click', () => {
     closeDrawer();
@@ -105,6 +112,28 @@ function showMainApp(user) {
   loadEmailFilters();
   loadProposals();
   initVoice();
+}
+
+function openMembersScreen() {
+  const list = document.getElementById('members-list');
+  list.innerHTML = '';
+  ALLOWED_EMAILS.forEach(email => {
+    const initial = email[0].toUpperCase();
+    const isCurrent = currentUser && currentUser.email === email;
+    const row = document.createElement('div');
+    row.className = 'drawer-member-row' + (isCurrent ? ' drawer-member-row--active' : '');
+    row.innerHTML = `
+      <div class="drawer-member-avatar">${initial}</div>
+      <span class="drawer-member-email">${email}</span>
+      ${isCurrent ? '<span class="drawer-member-you">you</span>' : ''}
+    `;
+    list.appendChild(row);
+  });
+  document.getElementById('members-screen').classList.remove('hidden');
+}
+
+function closeMembersScreen() {
+  document.getElementById('members-screen').classList.add('hidden');
 }
 
 // ── Email Filters ─────────────────────────────────────────────────────────────
@@ -310,6 +339,24 @@ async function loadProposals() {
     }
 
     proposals.forEach(p => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'proposal-card-wrapper';
+
+      const bg = document.createElement('div');
+      bg.className = 'swipe-assign-bg';
+      ALLOWED_EMAILS.forEach(email => {
+        const btn = document.createElement('div');
+        btn.className = 'assign-avatar';
+        btn.dataset.email = email;
+        btn.textContent = email[0].toUpperCase();
+        bg.appendChild(btn);
+      });
+      const bothBtn = document.createElement('div');
+      bothBtn.className = 'assign-avatar assign-avatar--both';
+      bothBtn.dataset.email = 'both';
+      bothBtn.innerHTML = `<span>${ALLOWED_EMAILS[0][0].toUpperCase()}</span><span>${ALLOWED_EMAILS[1][0].toUpperCase()}</span>`;
+      bg.appendChild(bothBtn);
+
       const card = document.createElement('div');
       card.className = 'proposal-card';
       card.innerHTML = `
@@ -317,13 +364,15 @@ async function loadProposals() {
         <div class="proposal-title">💡 ${escapeHtml(p.title)}</div>
         ${p.notes ? `<div class="proposal-notes">${escapeHtml(p.notes)}</div>` : ''}
         <div class="proposal-actions">
-          <button class="proposal-add-btn">Add to List</button>
           <button class="proposal-dismiss-btn">Dismiss</button>
         </div>
       `;
-      card.querySelector('.proposal-add-btn').addEventListener('click', () => acceptProposal(p.id, card));
-      card.querySelector('.proposal-dismiss-btn').addEventListener('click', () => dismissProposal(p.id, card));
-      list.appendChild(card);
+      card.querySelector('.proposal-dismiss-btn').addEventListener('click', () => dismissProposal(p.id, wrapper));
+
+      wrapper.appendChild(bg);
+      wrapper.appendChild(card);
+      addSwipeToAssign(wrapper, card, p.id);
+      list.appendChild(wrapper);
     });
   } catch (err) {
     console.error('Failed to load proposals:', err);
@@ -362,10 +411,15 @@ async function loadListScreen() {
       const card = document.createElement('div');
       card.className = 'task-card';
       const dateHtml = task.due && task.due !== 'none' ? `<span class="task-due">📅 ${task.due}</span>` : '';
+      const assigneeHtml = task.assignee === 'both'
+        ? `<div class="task-assignee-both"><div class="task-assignee task-assignee--${ALLOWED_EMAILS[0][0].toLowerCase()}">${ALLOWED_EMAILS[0][0].toUpperCase()}</div><div class="task-assignee task-assignee--${ALLOWED_EMAILS[1][0].toLowerCase()}">${ALLOWED_EMAILS[1][0].toUpperCase()}</div></div>`
+        : task.assignee
+          ? `<div class="task-assignee task-assignee--${task.assignee[0].toLowerCase()}">${task.assignee[0].toUpperCase()}</div>`
+          : '';
       card.innerHTML = `
         <div class="task-main">
           <div class="task-title">${escapeHtml(task.title)}</div>
-          ${dateHtml}
+          <div class="task-meta-right">${dateHtml}${assigneeHtml}</div>
         </div>
         ${task.notes ? `<div class="task-notes">${escapeHtml(task.notes)}</div>` : ''}
       `;
@@ -473,20 +527,78 @@ async function dismissEmail(emailId) {
   }
 }
 
-async function acceptProposal(proposalId, cardEl) {
+function addSwipeToAssign(wrapper, card, proposalId) {
+  let startX = 0;
+  let deltaX = 0;
+  let dragging = false;
+  let snapped = false;
+  const SNAP_WIDTH = 120;
+
+  function snapBack() {
+    card.style.transition = 'transform 0.25s ease';
+    card.style.transform = 'translateX(0)';
+    snapped = false;
+  }
+
+  card.addEventListener('touchstart', (e) => {
+    if (snapped) { snapBack(); return; }
+    startX = e.touches[0].clientX;
+    dragging = true;
+    card.style.transition = 'none';
+  }, { passive: true });
+
+  card.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    deltaX = e.touches[0].clientX - startX;
+    if (deltaX > 0) card.style.transform = `translateX(${Math.min(deltaX, SNAP_WIDTH)}px)`;
+  }, { passive: true });
+
+  card.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (deltaX > 60) {
+      card.style.transition = 'transform 0.25s ease';
+      card.style.transform = `translateX(${SNAP_WIDTH}px)`;
+      snapped = true;
+    } else {
+      snapBack();
+    }
+    deltaX = 0;
+  });
+
+  document.addEventListener('touchstart', (e) => {
+    if (snapped && !wrapper.contains(e.target)) snapBack();
+  }, { passive: true });
+
+  wrapper.querySelectorAll('.assign-avatar').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const email = btn.dataset.email;
+      card.style.transition = 'transform 0.25s ease, opacity 0.25s ease';
+      card.style.transform = 'translateX(100%)';
+      card.style.opacity = '0';
+      card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+      acceptProposalWithAssignee(proposalId, email);
+    });
+  });
+}
+
+async function acceptProposalWithAssignee(proposalId, assigneeEmail) {
   try {
-    await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, { method: 'POST' });
-    cardEl.remove();
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignee: assigneeEmail })
+    });
     loadProposals();
   } catch (err) {
     console.error('Failed to accept proposal:', err);
   }
 }
 
-async function dismissProposal(proposalId, cardEl) {
+async function dismissProposal(proposalId, wrapperEl) {
+  wrapperEl.remove();
   try {
     await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
-    cardEl.remove();
     loadProposals();
   } catch (err) {
     console.error('Failed to dismiss proposal:', err);

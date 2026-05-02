@@ -683,11 +683,40 @@ mark.search-highlight {
   max-width: 70%;
 }
 
+.email-meta-right-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .email-date {
   font-size: 0.75rem;
   color: #aaa;
   white-space: nowrap;
+}
+
+.email-new-tag {
+  display: inline-block;
+  background: #27ae60;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 10px;
   flex-shrink: 0;
+}
+
+.email-account-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  color: #888;
+  background: #f0f0f0;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-bottom: 4px;
 }
 
 .email-subject {

@@ -291,6 +291,19 @@ function removeSearchHighlights(node) {
 
 // ── Emails ────────────────────────────────────────────────────────────────────
 
+function getSeenEmailIds() {
+  try { return new Set(JSON.parse(localStorage.getItem('saucer_seen_emails') || '[]')); }
+  catch { return new Set(); }
+}
+
+function markEmailsAsSeen(ids) {
+  try {
+    const seen = getSeenEmailIds();
+    ids.forEach(id => seen.add(id));
+    localStorage.setItem('saucer_seen_emails', JSON.stringify([...seen]));
+  } catch {}
+}
+
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -311,7 +324,7 @@ function formatEmailDate(dateStr) {
   } catch { return ''; }
 }
 
-function buildEmailCard(email) {
+function buildEmailCard(email, isNew = false) {
   const bodyText = (email.body || email.snippet || '').trim();
   const preview = bodyText.slice(0, 220).replace(/\n+/g, ' ');
   const hasMore = bodyText.length > 220;
@@ -322,11 +335,14 @@ function buildEmailCard(email) {
 
   const card = document.createElement('div');
   card.className = 'email-card';
+  const accountBadge = email.account ? `<span class="email-account-badge">${escapeHtml(email.account)}</span>` : '';
+  const newTag = isNew ? '<span class="email-new-tag">new</span>' : '';
   card.innerHTML = `
     <div class="email-meta">
       <span class="email-sender">${escapeHtml(email.sender)}</span>
-      <span class="email-date">${escapeHtml(formatEmailDate(email.date))}</span>
+      <div class="email-meta-right-group">${newTag}<span class="email-date">${escapeHtml(formatEmailDate(email.date))}</span></div>
     </div>
+    ${accountBadge}
     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
     <div class="email-preview">${escapeHtml(preview)}${hasMore ? '…' : ''}</div>
     ${hasMore ? `
@@ -389,7 +405,11 @@ async function resyncEmails() {
       emailsContent.innerHTML = '<div class="empty-state">No emails found.</div>';
       return;
     }
-    data.emails.forEach(email => emailsContent.appendChild(buildEmailCard(email)));
+    const seenIds = getSeenEmailIds();
+    const emails = data.emails;
+    emails.sort((a, b) => new Date(b.date) - new Date(a.date));
+    emails.forEach(email => emailsContent.appendChild(buildEmailCard(email, !seenIds.has(email.id))));
+    markEmailsAsSeen(emails.map(e => e.id));
     wireSearchInput(emailsContent);
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
@@ -413,7 +433,11 @@ async function loadEmails(filters) {
       return;
     }
     emailsContent.innerHTML = '';
-    data.emails.forEach(email => emailsContent.appendChild(buildEmailCard(email)));
+    const seenIds = getSeenEmailIds();
+    const emails = data.emails;
+    emails.sort((a, b) => new Date(b.date) - new Date(a.date));
+    emails.forEach(email => emailsContent.appendChild(buildEmailCard(email, !seenIds.has(email.id))));
+    markEmailsAsSeen(emails.map(e => e.id));
     wireSearchInput(emailsContent);
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;

@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=17.1" />
-  <script src="https://accounts.google.com/gsi/client" async></script>
+  <link rel="stylesheet" href="style.css?v=17.4" />
+  <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
   <div id="app">
@@ -17,7 +17,12 @@
       <p class="tagline">Your household, in sync.</p>
     </header>
 
+    <button id="chat-btn" class="chat-btn hidden" aria-label="Open chat">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    </button>
+
     <div id="drawer-overlay" class="hidden"></div>
+    <div id="chat-overlay" class="hidden"></div>
     <nav id="side-drawer" class="side-drawer">
       <div class="drawer-header">Menu</div>
       <ul class="drawer-menu">
@@ -85,12 +90,7 @@
 
     <div id="login-screen">
       <p class="login-prompt">Sign in to continue</p>
-      <div id="g_id_onload"
-        data-client_id="987132498395-o9ldqc2vqu1b36d7d8leh8d56f4eu83a.apps.googleusercontent.com"
-        data-callback="handleGoogleSignIn"
-        data-auto_select="true">
-      </div>
-      <div class="g_id_signin" data-type="standard" data-theme="outline" data-size="large"></div>
+      <div class="g_id_signin"></div>
       <p id="login-error" class="hidden">Access denied. This app is private.</p>
     </div>
 
@@ -108,18 +108,22 @@
         <h3>Recent Emails</h3>
         <div id="emails-content"><div class="loading">Loading emails...</div></div>
       </div>
+    </div>
 
-      <div id="chat-panel">
-        <div id="messages"></div>
-        <div id="input-row">
-          <textarea id="msg-input" placeholder="Type a message…" rows="2"></textarea>
-          <button id="mic-btn" class="hidden" aria-label="Voice input">🎤</button>
-          <button id="send-btn">Send</button>
-        </div>
-        <div id="model-info"></div>
+    <div id="chat-panel">
+      <div id="chat-panel-header">
+        <span class="chat-panel-title">Ask Saucer</span>
+        <button id="chat-close-btn" aria-label="Close chat">✕</button>
       </div>
+      <div id="messages"></div>
+      <div id="input-row">
+        <textarea id="msg-input" placeholder="Type a message…" rows="2"></textarea>
+        <button id="mic-btn" class="hidden" aria-label="Voice input">🎤</button>
+        <button id="send-btn">Send</button>
+      </div>
+      <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=11.1"></script>
+  <script src="app.js?v=11.4"></script>
 </body>
 </html>

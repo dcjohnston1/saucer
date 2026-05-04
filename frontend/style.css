@@ -213,7 +213,82 @@ header h1 {
 .user-btn:hover { background: #e8e4e0; }
 
 .hidden { display: none !important; }
-#chat-panel { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+
+/* Chat button — fixed floating button top-right */
+.chat-btn {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 150;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #2b2b2b;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  transition: background 0.15s, transform 0.15s;
+}
+.chat-btn:hover { background: #444; transform: scale(1.06); }
+.chat-btn:active { transform: scale(0.96); }
+
+/* Chat overlay (same pattern as drawer overlay) */
+#chat-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 199;
+}
+
+/* Chat panel — slides in from right */
+#chat-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(400px, 100vw);
+  background: #f4f1ee;
+  z-index: 200;
+  transform: translateX(100%);
+  transition: transform 0.28s ease;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -2px 0 16px rgba(0,0,0,0.12);
+}
+#chat-panel.chat-open { transform: translateX(0); }
+
+#chat-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 16px 16px;
+  border-bottom: 1px solid #e8e4e0;
+  flex-shrink: 0;
+}
+
+.chat-panel-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #2b2b2b;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+#chat-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: #888;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  font-family: inherit;
+}
+#chat-close-btn:hover { color: #2b2b2b; }
 
 #active-user-bar {
   display: flex;
@@ -234,7 +309,6 @@ header h1 {
 
 #messages {
   background: #fff;
-  border-radius: 16px;
   padding: 16px;
   flex: 1;
   min-height: 0;
@@ -242,7 +316,6 @@ header h1 {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 
 .bubble {
@@ -274,6 +347,8 @@ header h1 {
   display: flex;
   gap: 8px;
   align-items: flex-end;
+  padding: 12px 16px 0;
+  flex-shrink: 0;
 }
 
 #msg-input {
@@ -332,8 +407,9 @@ header h1 {
   font-size: 0.7rem;
   color: #999;
   text-align: right;
-  margin-top: 4px;
+  padding: 4px 16px max(16px, env(safe-area-inset-bottom));
   font-style: italic;
+  flex-shrink: 0;
 }
 
 #home-list-section {

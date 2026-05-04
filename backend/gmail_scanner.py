@@ -8,8 +8,9 @@ from googleapiclient.discovery import build
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
 
-def get_gmail_service():
-    refresh_token = os.environ.get('GMAIL_REFRESH_TOKEN')
+def _build_service(refresh_token_key='GMAIL_REFRESH_TOKEN'):
+    """Build a Gmail service for the account identified by the given env var key."""
+    refresh_token = os.environ.get(refresh_token_key)
     client_id = os.environ.get('GMAIL_CLIENT_ID')
     client_secret = os.environ.get('GMAIL_CLIENT_SECRET')
 
@@ -24,7 +25,13 @@ def get_gmail_service():
             scopes=SCOPES
         )
         return build('gmail', 'v1', credentials=creds)
+    return None
 
+
+def get_gmail_service():
+    svc = _build_service('GMAIL_REFRESH_TOKEN')
+    if svc:
+        return svc
     creds_json = os.environ.get('GOOGLE_CREDENTIALS_JSON')
     if not creds_json:
         return None
@@ -36,6 +43,18 @@ def get_gmail_service():
     if gmail_user:
         creds = creds.with_subject(gmail_user)
     return build('gmail', 'v1', credentials=creds)
+
+
+def _get_all_services():
+    """Return list of (service, account_label) for every configured Gmail account."""
+    services = []
+    primary = get_gmail_service()
+    if primary:
+        services.append((primary, os.environ.get('GMAIL_USER', 'Account 1')))
+    secondary = _build_service('GMAIL_REFRESH_TOKEN_2')
+    if secondary:
+        services.append((secondary, os.environ.get('GMAIL_USER_2', 'Account 2')))
+    return services
 
 
 def _extract_body(payload):
@@ -89,62 +108,71 @@ def _extract_attachments(payload, service, user_id, msg_id):
     return attachments
 
 
-def scan_emails(sender_filter=None, keyword_filter=None, after_timestamp=None):
-    service = get_gmail_service()
-    if not service:
-        return []
-
+def _scan_account(service, account_label, sender_filter=None, keyword_filter=None, after_timestamp=None, prefix_ids=False):
+    """Scan a single Gmail account and return email list."""
     user_id = 'me'
-    try:
-        query_parts = []
+    query_parts = []
 
-        match_clauses = []
-        if isinstance(sender_filter, list) and sender_filter:
-            match_clauses.extend(f'from:{s}' for s in sender_filter)
-        elif sender_filter:
-            match_clauses.append(f'from:{sender_filter}')
-        if isinstance(keyword_filter, list) and keyword_filter:
-            match_clauses.extend(keyword_filter)
-        elif keyword_filter:
-            match_clauses.append(keyword_filter)
-        if match_clauses:
-            query_parts.append('(' + ' OR '.join(match_clauses) + ')')
+    match_clauses = []
+    if isinstance(sender_filter, list) and sender_filter:
+        match_clauses.extend(f'from:{s}' for s in sender_filter)
+    elif sender_filter:
+        match_clauses.append(f'from:{sender_filter}')
+    if isinstance(keyword_filter, list) and keyword_filter:
+        match_clauses.extend(keyword_filter)
+    elif keyword_filter:
+        match_clauses.append(keyword_filter)
+    if match_clauses:
+        query_parts.append('(' + ' OR '.join(match_clauses) + ')')
 
-        if after_timestamp:
-            query_parts.append(f'after:{int(after_timestamp)}')
+    if after_timestamp:
+        query_parts.append(f'after:{int(after_timestamp)}')
 
-        query = ' '.join(query_parts) if query_parts else None
-        results = service.users().messages().list(
-            userId=user_id, maxResults=50, q=query
+    query = ' '.join(query_parts) if query_parts else None
+    results = service.users().messages().list(
+        userId=user_id, maxResults=50, q=query
+    ).execute()
+    messages = results.get('messages', [])
+
+    email_list = []
+    for msg in messages:
+        msg_id = msg['id']
+        message = service.users().messages().get(
+            userId=user_id, id=msg_id, format='full'
         ).execute()
-        messages = results.get('messages', [])
 
-        email_list = []
-        for msg in messages:
-            msg_id = msg['id']
-            message = service.users().messages().get(
-                userId=user_id, id=msg_id, format='full'
-            ).execute()
+        headers = message['payload'].get('headers', [])
+        subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
+        sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
+        date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
 
-            headers = message['payload'].get('headers', [])
-            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
-            sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
-            date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+        body = _extract_body(message['payload'])
+        attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
 
-            body = _extract_body(message['payload'])
-            attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
+        email_list.append({
+            'id': f"{account_label}:{msg_id}" if prefix_ids else msg_id,
+            'subject': subject,
+            'sender': sender,
+            'date': date,
+            'body': body,
+            'snippet': message.get('snippet', ''),
+            'attachments': attachments,
+            'account': account_label,
+        })
 
-            email_list.append({
-                'id': msg_id,
-                'subject': subject,
-                'sender': sender,
-                'date': date,
-                'body': body,
-                'snippet': message.get('snippet', ''),
-                'attachments': attachments,
-            })
+    return email_list
 
-        return email_list
-    except Exception as e:
-        print(f"Error scanning emails: {e}")
+
+def scan_emails(sender_filter=None, keyword_filter=None, after_timestamp=None):
+    all_services = _get_all_services()
+    if not all_services:
         return []
+
+    email_list = []
+    for i, (service, label) in enumerate(all_services):
+        try:
+            email_list.extend(_scan_account(service, label, sender_filter, keyword_filter, after_timestamp, prefix_ids=(i > 0)))
+        except Exception as e:
+            print(f"Error scanning {label}: {e}")
+
+    return email_list

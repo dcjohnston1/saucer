@@ -1,10 +1,33 @@
 const BACKEND_URL = 'https://saucer-backend-987132498395.us-central1.run.app';
 const ALLOWED_EMAILS = ['dcjohnston1@gmail.com', 'emily.osteen.johnston@gmail.com'];
+const GOOGLE_CLIENT_ID = '987132498395-o9ldqc2vqu1b36d7d8leh8d56f4eu83a.apps.googleusercontent.com';
 
 let currentUser = null;
 let conversationHistory = [];
+let sessionPrevSeenAt = 0;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
+
+function initGoogleAuth() {
+  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleSignIn, auto_select: true });
+
+  // Skip prompt and button if we already have a valid stored session
+  const stored = localStorage.getItem('saucer_user');
+  if (stored) {
+    try {
+      const user = JSON.parse(stored);
+      if (ALLOWED_EMAILS.includes(user.email)) return;
+    } catch {}
+  }
+
+  renderGoogleButton();
+  google.accounts.id.prompt();
+}
+
+function renderGoogleButton() {
+  const el = document.querySelector('.g_id_signin');
+  if (el) google.accounts.id.renderButton(el, { type: 'standard', theme: 'outline', size: 'large' });
+}
 
 function handleGoogleSignIn(response) {
   const payload = JSON.parse(atob(response.credential.split('.')[1]));
@@ -18,11 +41,28 @@ function handleGoogleSignIn(response) {
 }
 
 function signOut() {
+  closeChat();
   localStorage.removeItem('saucer_user');
   currentUser = null;
   conversationHistory = [];
+  document.getElementById('chat-btn').classList.add('hidden');
   document.getElementById('main-app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
+  if (window.google?.accounts?.id) {
+    renderGoogleButton();
+    google.accounts.id.prompt();
+  }
+}
+
+function openChat() {
+  document.getElementById('chat-panel').classList.add('chat-open');
+  document.getElementById('chat-overlay').classList.remove('hidden');
+  document.getElementById('msg-input').focus();
+}
+
+function closeChat() {
+  document.getElementById('chat-panel').classList.remove('chat-open');
+  document.getElementById('chat-overlay').classList.add('hidden');
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -48,6 +88,9 @@ function closeSendersScreen() {
 window.addEventListener('DOMContentLoaded', () => {
   // Wire up static elements
   document.getElementById('sign-out-btn').addEventListener('click', signOut);
+  document.getElementById('chat-btn').addEventListener('click', openChat);
+  document.getElementById('chat-overlay').addEventListener('click', closeChat);
+  document.getElementById('chat-close-btn').addEventListener('click', closeChat);
   document.getElementById('add-sender-btn').addEventListener('click', addSender);
   document.getElementById('new-sender-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addSender();
@@ -111,10 +154,14 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 function showMainApp(user) {
+  if (currentUser) return;
   currentUser = user;
+  sessionPrevSeenAt = getLastSeenAt();
+  setLastSeenAt(Date.now());
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('main-app').classList.remove('hidden');
   document.getElementById('hamburger-btn').classList.remove('hidden');
+  document.getElementById('chat-btn').classList.remove('hidden');
   document.getElementById('user-name').textContent = user.name;
   loadEmailFilters();
   loadKeywordFilters();
@@ -291,17 +338,13 @@ function removeSearchHighlights(node) {
 
 // ── Emails ────────────────────────────────────────────────────────────────────
 
-function getSeenEmailIds() {
-  try { return new Set(JSON.parse(localStorage.getItem('saucer_seen_emails') || '[]')); }
-  catch { return new Set(); }
+function getLastSeenAt() {
+  try { return parseInt(localStorage.getItem('saucer_last_seen_at') || '0'); }
+  catch { return 0; }
 }
 
-function markEmailsAsSeen(ids) {
-  try {
-    const seen = getSeenEmailIds();
-    ids.forEach(id => seen.add(id));
-    localStorage.setItem('saucer_seen_emails', JSON.stringify([...seen]));
-  } catch {}
+function setLastSeenAt(ts) {
+  try { localStorage.setItem('saucer_last_seen_at', String(ts)); } catch {}
 }
 
 function escapeHtml(str) {
@@ -405,11 +448,12 @@ async function resyncEmails() {
       emailsContent.innerHTML = '<div class="empty-state">No emails found.</div>';
       return;
     }
-    const seenIds = getSeenEmailIds();
     const emails = data.emails;
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    emails.forEach(email => emailsContent.appendChild(buildEmailCard(email, !seenIds.has(email.id))));
-    markEmailsAsSeen(emails.map(e => e.id));
+    emails.forEach(email => {
+      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
+      emailsContent.appendChild(buildEmailCard(email, isNew));
+    });
     wireSearchInput(emailsContent);
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
@@ -433,11 +477,12 @@ async function loadEmails(filters) {
       return;
     }
     emailsContent.innerHTML = '';
-    const seenIds = getSeenEmailIds();
     const emails = data.emails;
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    emails.forEach(email => emailsContent.appendChild(buildEmailCard(email, !seenIds.has(email.id))));
-    markEmailsAsSeen(emails.map(e => e.id));
+    emails.forEach(email => {
+      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
+      emailsContent.appendChild(buildEmailCard(email, isNew));
+    });
     wireSearchInput(emailsContent);
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;

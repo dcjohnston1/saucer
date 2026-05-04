@@ -16,14 +16,14 @@ def scan_emails_for_todos(emails):
 
     blocks = []
     for e in emails:
-        body = (e.get('body') or e.get('snippet', ''))[:500]
+        body = (e.get('body') or e.get('snippet', ''))[:2000]
         block = f"EMAIL_ID: {e['id']}\nFrom: {e['sender']}\nSubject: {e['subject']}\nBody: {body}"
         for a in e.get('attachments', []):
             if a.get('extracted_text'):
                 block += f"\nAttachment ({a['filename']}): {a['extracted_text'][:2000]}"
         blocks.append(block)
 
-    prompt = """You are a household assistant. Review the following emails and identify genuine action items for the household — bills to pay, appointments to schedule, renewals, school events, service reminders, etc. Skip marketing, newsletters, and receipts for things already completed.
+    prompt = """You are a household assistant. Review the following emails and identify genuine action items for the household — bills to pay, appointments to schedule, renewals, school events, service reminders, items to bring to school, permission slips, RSVPs, follow-ups, etc. Skip marketing, newsletters, and receipts for things already completed.
 
 For each action item found, return a JSON array. Return ONLY valid JSON, no other text.
 

@@ -23,7 +23,7 @@ def scan_emails_for_todos(emails):
                 block += f"\nAttachment ({a['filename']}): {a['extracted_text'][:2000]}"
         blocks.append(block)
 
-    prompt = """You are a household assistant. Review the following emails and identify genuine action items for the household — bills to pay, appointments to schedule, renewals, school events, service reminders, items to bring to school, permission slips, RSVPs, follow-ups, etc. Skip marketing, newsletters, and receipts for things already completed.
+    prompt = """You are a household assistant. Review the following emails and identify genuine action items for the household. Cast a wide net — include: bills to pay, appointments to schedule, renewals, school events, service reminders, permission slips, RSVPs, follow-ups, items to bring or wear on a specific day (spirit days, dress-up days, show-and-share), deadlines to sign up for something, testing dates that require preparation, and any other task that requires the family to do or remember something. If it requires a person to act or remember, flag it. Skip pure marketing, generic newsletters with no specific ask, and receipts for things already completed.
 
 For each action item found, return a JSON array. Return ONLY valid JSON, no other text.
 

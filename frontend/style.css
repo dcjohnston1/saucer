@@ -786,6 +786,170 @@ mark.search-highlight {
   border-left-color: #e74c3c;
 }
 
+/* ── Inline proposals ──────────────────────────────────────────────────────── */
+
+.email-proposals {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.proposals-scanning {
+  font-size: 0.78rem;
+  color: #bbb;
+  font-style: italic;
+  padding: 2px 0 6px;
+}
+
+.proposals-header {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.proposal-row {
+  padding: 6px 0;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.proposal-row:last-of-type {
+  border-bottom: none;
+}
+
+.proposal-row--handled {
+  opacity: 0.45;
+}
+
+.proposal-row-title {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: #222;
+  margin-bottom: 2px;
+}
+
+.proposal-row-notes {
+  font-size: 0.78rem;
+  color: #999;
+  margin-bottom: 4px;
+}
+
+.proposal-row-date {
+  font-size: 0.75rem;
+  color: #aaa;
+  margin-bottom: 4px;
+}
+
+.proposal-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.inline-assign-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.inline-assign-btn--d { background: #2b2b2b; }
+.inline-assign-btn--e { background: #4a90d9; }
+
+.inline-skip-btn {
+  background: none;
+  border: none;
+  font-size: 0.78rem;
+  color: #bbb;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.inline-skip-btn:active { color: #888; }
+
+.proposal-done-label {
+  font-size: 0.78rem;
+  color: #aaa;
+}
+
+.inline-assignee-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.review-btn {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 0;
+  background: none;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #888;
+  cursor: pointer;
+  text-align: center;
+}
+
+.review-btn:active { background: #f5f5f5; }
+
+/* ── Recently Reviewed screen ──────────────────────────────────────────────── */
+
+.reviewed-email-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  border-left: 3px solid #ccc;
+}
+
+.reviewed-email-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.reviewed-email-sender {
+  font-size: 0.78rem;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reviewed-email-date {
+  font-size: 0.72rem;
+  color: #bbb;
+  flex-shrink: 0;
+}
+
+.reviewed-email-subject {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #444;
+}
+
 .email-account-badge {
   display: inline-block;
   font-size: 0.7rem;

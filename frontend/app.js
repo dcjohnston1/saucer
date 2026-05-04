@@ -129,6 +129,13 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('members-back-btn').addEventListener('click', closeMembersScreen);
 
+  // Recently Reviewed screen
+  document.getElementById('menu-reviewed').addEventListener('click', () => {
+    closeDrawer();
+    openReviewedScreen();
+  });
+  document.getElementById('reviewed-back-btn').addEventListener('click', closeReviewedScreen);
+
   // Usage screen
   document.getElementById('menu-usage').addEventListener('click', () => {
     closeDrawer();
@@ -468,9 +475,143 @@ function buildEmailCard(email, isNew = false) {
     card.appendChild(chips);
   }
 
+  buildProposalsSection(card, email);
   wrapper.appendChild(card);
   addSwipeToDismiss(wrapper, card, email.id);
   return wrapper;
+}
+
+function buildProposalsSection(card, email) {
+  const section = document.createElement('div');
+  section.className = 'email-proposals';
+
+  if (email.proposals === undefined || email.proposals === null) {
+    const msg = document.createElement('div');
+    msg.className = 'proposals-scanning';
+    msg.textContent = 'Checking for action items…';
+    section.appendChild(msg);
+    card.appendChild(section);
+    return;
+  }
+
+  if (email.proposals.length > 0) {
+    const header = document.createElement('div');
+    header.className = 'proposals-header';
+    header.textContent = 'Action items';
+    section.appendChild(header);
+    email.proposals.forEach(p => section.appendChild(buildProposalRow(p, email.id, card)));
+  }
+
+  const reviewBtn = document.createElement('button');
+  reviewBtn.className = 'review-btn';
+  reviewBtn.textContent = 'Mark Reviewed';
+  reviewBtn.addEventListener('click', () => reviewEmail(email.id, card.closest('.email-card-wrapper')));
+  section.appendChild(reviewBtn);
+
+  card.appendChild(section);
+}
+
+function buildProposalRow(p, emailId, card) {
+  const row = document.createElement('div');
+  row.className = 'proposal-row';
+  row.dataset.proposalId = p.id;
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'proposal-row-title';
+  titleEl.textContent = p.title;
+  row.appendChild(titleEl);
+
+  if (p.notes) {
+    const notesEl = document.createElement('div');
+    notesEl.className = 'proposal-row-notes';
+    notesEl.textContent = p.notes;
+    row.appendChild(notesEl);
+  }
+
+  if (p.date_expression) {
+    const dateEl = document.createElement('div');
+    dateEl.className = 'proposal-row-date';
+    dateEl.textContent = `📅 ${p.date_expression}`;
+    row.appendChild(dateEl);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'proposal-row-actions';
+
+  ALLOWED_EMAILS.forEach(email => {
+    const btn = document.createElement('button');
+    btn.className = `inline-assign-btn inline-assign-btn--${email[0].toLowerCase()}`;
+    btn.textContent = email[0].toUpperCase();
+    btn.title = email;
+    btn.addEventListener('click', () => assignInlineProposal(p.id, email, emailId, row, card));
+    actions.appendChild(btn);
+  });
+
+  const skipBtn = document.createElement('button');
+  skipBtn.className = 'inline-skip-btn';
+  skipBtn.textContent = 'Skip';
+  skipBtn.addEventListener('click', () => skipInlineProposal(p.id, emailId, row, card));
+  actions.appendChild(skipBtn);
+
+  row.appendChild(actions);
+  return row;
+}
+
+async function assignInlineProposal(proposalId, assigneeEmail, emailId, row, card) {
+  row.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignee: assigneeEmail })
+    });
+    const initial = assigneeEmail[0].toUpperCase();
+    const actions = row.querySelector('.proposal-row-actions');
+    actions.innerHTML = `<span class="proposal-done-label">✓ Added to list</span><span class="inline-assignee-badge inline-assign-btn--${assigneeEmail[0].toLowerCase()}">${initial}</span>`;
+    row.classList.add('proposal-row--handled');
+    checkAllProposalsHandled(emailId, card);
+  } catch (err) {
+    row.querySelectorAll('button').forEach(b => b.disabled = false);
+    console.error('Failed to assign proposal:', err);
+  }
+}
+
+async function skipInlineProposal(proposalId, emailId, row, card) {
+  row.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
+    const actions = row.querySelector('.proposal-row-actions');
+    actions.innerHTML = '<span class="proposal-done-label">Skipped</span>';
+    row.classList.add('proposal-row--handled');
+    checkAllProposalsHandled(emailId, card);
+  } catch (err) {
+    row.querySelectorAll('button').forEach(b => b.disabled = false);
+    console.error('Failed to skip proposal:', err);
+  }
+}
+
+function checkAllProposalsHandled(emailId, card) {
+  const unhandled = card.querySelectorAll('.proposal-row:not(.proposal-row--handled)');
+  if (unhandled.length === 0) {
+    reviewEmail(emailId, card.closest('.email-card-wrapper'));
+  }
+}
+
+async function reviewEmail(emailId, wrapper) {
+  try {
+    await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}/review`, { method: 'POST' });
+  } catch (err) {
+    console.error('Failed to review email:', err);
+  }
+  const card = wrapper.querySelector('.email-card');
+  if (card) {
+    card.style.transition = 'transform 0.35s ease, opacity 0.35s ease';
+    card.style.transform = 'translateX(-100%)';
+    card.style.opacity = '0';
+    card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+  } else {
+    wrapper.remove();
+  }
 }
 
 async function resyncEmails() {
@@ -546,6 +687,46 @@ function wireSearchInput(emailsContent) {
       }
     });
   };
+}
+
+// ── Recently Reviewed ─────────────────────────────────────────────────────────
+
+function openReviewedScreen() {
+  document.getElementById('reviewed-screen').classList.remove('hidden');
+  loadReviewedScreen();
+}
+
+function closeReviewedScreen() {
+  document.getElementById('reviewed-screen').classList.add('hidden');
+}
+
+async function loadReviewedScreen() {
+  const content = document.getElementById('reviewed-content');
+  content.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const res = await fetch(`${BACKEND_URL}/reviewed-emails`);
+    const data = await res.json();
+    const emails = data.emails || [];
+    if (emails.length === 0) {
+      content.innerHTML = '<div class="empty-state">No reviewed emails yet.</div>';
+      return;
+    }
+    content.innerHTML = '';
+    emails.forEach(email => {
+      const card = document.createElement('div');
+      card.className = 'reviewed-email-card';
+      card.innerHTML = `
+        <div class="reviewed-email-meta">
+          <span class="reviewed-email-sender">${escapeHtml(email.sender)}</span>
+          <span class="reviewed-email-date">${escapeHtml(formatEmailDate(email.date))}</span>
+        </div>
+        <div class="reviewed-email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+      `;
+      content.appendChild(card);
+    });
+  } catch (err) {
+    content.innerHTML = '<div class="empty-state">Error loading reviewed emails.</div>';
+  }
 }
 
 // ── Proposals ────────────────────────────────────────────────────────────────

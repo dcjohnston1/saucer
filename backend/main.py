@@ -137,7 +137,8 @@ def get_emails():
     write_json('saucer-config.json', config)
 
     dismissed = set(read_json('saucer-dismissed.json', []))
-    visible = [e for e in merged if e['id'] not in dismissed]
+    reviewed = set(read_json('saucer-reviewed.json', []))
+    visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
 
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))
@@ -167,6 +168,11 @@ def get_emails():
             proposals.setdefault(e['id'], [])
         write_json('saucer-proposals.json', proposals)
         write_json('saucer-scanned.json', list(scanned))
+
+    for e in visible:
+        all_props = proposals.get(e['id'])
+        if all_props is not None:
+            e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
 
     return jsonify({'emails': visible})
 
@@ -202,7 +208,13 @@ def resync_emails():
     write_json('saucer-config.json', config)
 
     dismissed = set(read_json('saucer-dismissed.json', []))
-    visible = [e for e in merged if e['id'] not in dismissed]
+    reviewed = set(read_json('saucer-reviewed.json', []))
+    visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
+    proposals_data = read_json('saucer-proposals.json', {})
+    for e in visible:
+        all_props = proposals_data.get(e['id'])
+        if all_props is not None:
+            e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
     return jsonify({'emails': visible, 'synced': len(new_emails)})
 
 
@@ -288,6 +300,27 @@ def dismiss_email(email_id):
         dismissed.append(email_id)
         write_json('saucer-dismissed.json', dismissed)
     return jsonify({'ok': True})
+
+
+@app.route('/emails/<email_id>/review', methods=['POST'])
+def review_email(email_id):
+    from gcs import read_json, write_json
+    reviewed = read_json('saucer-reviewed.json', [])
+    if email_id in reviewed:
+        reviewed.remove(email_id)
+    reviewed.insert(0, email_id)
+    write_json('saucer-reviewed.json', reviewed)
+    return jsonify({'ok': True})
+
+
+@app.route('/reviewed-emails', methods=['GET'])
+def get_reviewed_emails():
+    from gcs import read_json
+    reviewed_ids = read_json('saucer-reviewed.json', [])
+    all_emails = read_json('saucer-emails.json', [])
+    email_map = {e['id']: e for e in all_emails}
+    result = [email_map[rid] for rid in reviewed_ids if rid in email_map]
+    return jsonify({'emails': result[:30]})
 
 
 @app.route('/doc/task', methods=['DELETE'])

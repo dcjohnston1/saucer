@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=17.6" />
+  <link rel="stylesheet" href="style.css?v=17.7" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
@@ -32,6 +32,7 @@
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
         <li class="drawer-item drawer-item--soon">About</li>
+        <li class="drawer-item" id="menu-reviewed">Recently Reviewed</li>
         <li class="drawer-item" id="menu-members">Members</li>
         <li class="drawer-item" id="menu-usage">Usage</li>
       </ul>
@@ -89,6 +90,16 @@
       </div>
     </div>
 
+    <div id="reviewed-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="reviewed-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title">Recently Reviewed</span>
+      </div>
+      <div class="screen-body">
+        <div id="reviewed-content"></div>
+      </div>
+    </div>
+
     <div id="usage-screen" class="screen hidden">
       <div class="screen-header">
         <button id="usage-back-btn" class="back-btn">&#8592; Back</button>
@@ -135,6 +146,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=11.7"></script>
+  <script src="app.js?v=11.8"></script>
 </body>
 </html>

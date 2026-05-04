@@ -494,7 +494,9 @@ function buildProposalsSection(card, email) {
     return;
   }
 
-  if (email.proposals.length > 0) {
+  const hasPending = email.proposals.length > 0;
+
+  if (hasPending) {
     const header = document.createElement('div');
     header.className = 'proposals-header';
     header.textContent = 'Action items';
@@ -505,6 +507,7 @@ function buildProposalsSection(card, email) {
   const reviewBtn = document.createElement('button');
   reviewBtn.className = 'review-btn';
   reviewBtn.textContent = 'Mark Reviewed';
+  reviewBtn.disabled = hasPending;
   reviewBtn.addEventListener('click', () => reviewEmail(email.id, card.closest('.email-card-wrapper')));
   section.appendChild(reviewBtn);
 
@@ -593,7 +596,8 @@ async function skipInlineProposal(proposalId, emailId, row, card) {
 function checkAllProposalsHandled(emailId, card) {
   const unhandled = card.querySelectorAll('.proposal-row:not(.proposal-row--handled)');
   if (unhandled.length === 0) {
-    reviewEmail(emailId, card.closest('.email-card-wrapper'));
+    const reviewBtn = card.querySelector('.review-btn');
+    if (reviewBtn) reviewBtn.disabled = false;
   }
 }
 

@@ -899,17 +899,33 @@ mark.search-highlight {
   display: block;
   width: 100%;
   margin-top: 10px;
-  padding: 8px 0;
-  background: none;
-  border: 1px solid #e0e0e0;
+  padding: 9px 0;
   border-radius: 8px;
-  font-size: 0.82rem;
-  color: #888;
-  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
   text-align: center;
+  cursor: pointer;
+  border: 1.5px solid #d0d0d0;
+  background: none;
+  color: #ccc;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
 }
 
-.review-btn:active { background: #f5f5f5; }
+.review-btn:disabled {
+  cursor: default;
+}
+
+.review-btn:not(:disabled) {
+  background: #27ae60;
+  border-color: #27ae60;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(39, 174, 96, 0.3);
+}
+
+.review-btn:not(:disabled):active {
+  background: #219a55;
+  box-shadow: none;
+}
 
 /* ── Recently Reviewed screen ──────────────────────────────────────────────── */
 

@@ -70,6 +70,19 @@ def _extract_body(payload):
     return ''
 
 
+def _extract_html_body(payload):
+    """Recursively extract HTML body from email payload."""
+    if payload.get('mimeType') == 'text/html':
+        data = payload.get('body', {}).get('data')
+        if data:
+            return base64.urlsafe_b64decode(data).decode('utf-8', errors='replace')
+    for part in payload.get('parts', []):
+        result = _extract_html_body(part)
+        if result:
+            return result
+    return ''
+
+
 def _extract_attachments(payload, service, user_id, msg_id):
     """Walk MIME tree and return list of {filename, extracted_text} for PDF parts."""
     attachments = []
@@ -147,6 +160,7 @@ def _scan_account(service, account_label, sender_filter=None, keyword_filter=Non
         date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
 
         body = _extract_body(message['payload'])
+        html_body = _extract_html_body(message['payload'])
         attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
 
         email_list.append({
@@ -155,6 +169,7 @@ def _scan_account(service, account_label, sender_filter=None, keyword_filter=Non
             'sender': sender,
             'date': date,
             'body': body,
+            'html_body': html_body,
             'snippet': message.get('snippet', ''),
             'attachments': attachments,
             'account': account_label,

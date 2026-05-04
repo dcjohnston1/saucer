@@ -72,6 +72,7 @@ def get_doc():
             'urgency': None,
             'notes': None,
             'assignee': None,
+            'source_email_id': None,
         }
 
         for part in parts[2:]:
@@ -93,6 +94,8 @@ def get_doc():
                 task['notes'] = part[6:]
             elif part.startswith('assignee:'):
                 task['assignee'] = part[9:]
+            elif part.startswith('source_email_id:'):
+                task['source_email_id'] = part[16:]
 
         tasks.append(task)
 
@@ -136,9 +139,34 @@ def get_emails():
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
     write_json('saucer-config.json', config)
 
+    # Generate summaries for emails that don't have one yet (cap at 5 per request)
+    to_summarize = [e for e in merged if not e.get('summary')][:5]
+    if to_summarize:
+        from email_scanner import summarize_emails
+        summaries = summarize_emails(to_summarize)
+        if summaries:
+            for e in merged:
+                if e['id'] in summaries:
+                    e['summary'] = summaries[e['id']]
+            write_json('saucer-emails.json', merged)
+
+    # Apply exclude keywords
+    excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
+    exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+
     dismissed = set(read_json('saucer-dismissed.json', []))
     reviewed = set(read_json('saucer-reviewed.json', []))
     visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
+
+    if exclude_keywords:
+        def _matches_exclude(e):
+            haystack = ' '.join([
+                e.get('subject', ''),
+                e.get('sender', ''),
+                (e.get('body', '') or e.get('snippet', ''))[:500],
+            ]).lower()
+            return any(kw in haystack for kw in exclude_keywords)
+        visible = [e for e in visible if not _matches_exclude(e)]
 
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))
@@ -268,8 +296,26 @@ def accept_proposal(proposal_id):
                         title=p['title'],
                         date_expression=p.get('date_expression') or None,
                         notes=p.get('notes') or None,
-                        assignee=assignee
+                        assignee=assignee,
+                        source_email_id=email_id,
                     )
+                if p.get('date_expression'):
+                    try:
+                        from gcalendar import create_event
+                        label_map = {
+                            'dcjohnston1@gmail.com': 'Daniel',
+                            'emily.osteen.johnston@gmail.com': 'Emily',
+                            'both': 'Both',
+                        }
+                        assignee_label = label_map.get(assignee, assignee)
+                        create_event(
+                            title=p['title'],
+                            date_expression=p['date_expression'],
+                            notes=p.get('notes'),
+                            assignee_label=assignee_label
+                        )
+                    except Exception as e:
+                        print(f"Calendar event creation failed: {e}")
                 p['accepted'] = True
                 write_json('saucer-proposals.json', proposals)
                 return jsonify({'ok': True})
@@ -409,6 +455,20 @@ def remove_keyword_filter(keyword):
     return jsonify({'ok': True})
 
 
+@app.route('/calendar/events', methods=['GET'])
+def get_calendar_events():
+    from gcalendar import get_events
+    start = request.args.get('start')
+    end = request.args.get('end')
+    if not start or not end:
+        return jsonify({'error': 'Missing start or end'}), 400
+    try:
+        events = get_events(start, end)
+        return jsonify({'events': events})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/stats', methods=['GET'])
 def get_stats():
     from gcs import read_json
@@ -417,6 +477,92 @@ def get_stats():
         'lifetime_tokens': stats.get('lifetime_tokens', 0),
         'chat_messages': stats.get('chat_messages', 0),
     })
+
+
+
+@app.route('/emails/<path:email_id>', methods=['GET'])
+def get_email_by_id(email_id):
+    from gcs import read_json
+    emails = read_json('saucer-emails.json', [])
+    for e in emails:
+        if e['id'] == email_id:
+            return jsonify({'email': e})
+    return jsonify({'error': 'Not found'}), 404
+
+
+@app.route('/exclude-keyword-filters', methods=['GET'])
+def get_exclude_keyword_filters():
+    db = get_db()
+    doc = db.collection('settings').document('exclude_keyword_filters').get()
+    keywords = doc.to_dict().get('keywords', []) if doc.exists else []
+    return jsonify({'keywords': keywords})
+
+
+@app.route('/exclude-keyword-filters', methods=['POST'])
+def add_exclude_keyword_filter():
+    data = request.get_json()
+    keyword = data.get('keyword', '').strip().lower()
+    if not keyword:
+        return jsonify({'error': 'Missing keyword'}), 400
+    db = get_db()
+    db.collection('settings').document('exclude_keyword_filters').set(
+        {'keywords': firestore.ArrayUnion([keyword])}, merge=True
+    )
+    return jsonify({'ok': True})
+
+
+@app.route('/exclude-keyword-filters/<path:keyword>', methods=['DELETE'])
+def remove_exclude_keyword_filter(keyword):
+    db = get_db()
+    db.collection('settings').document('exclude_keyword_filters').set(
+        {'keywords': firestore.ArrayRemove([keyword])}, merge=True
+    )
+    return jsonify({'ok': True})
+
+
+@app.route('/calendar/events', methods=['POST'])
+def create_calendar_event():
+    from gcalendar import create_event_direct
+    data = request.get_json()
+    title = (data.get('title') or '').strip()
+    date_str = data.get('date')
+    time_str = data.get('time') or None
+    notes = data.get('notes') or None
+    if not title or not date_str:
+        return jsonify({'error': 'Missing title or date'}), 400
+    try:
+        event_id = create_event_direct(title, date_str, time_str, notes=notes)
+        return jsonify({'ok': True, 'id': event_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/calendar/events/<event_id>', methods=['PUT'])
+def update_calendar_event(event_id):
+    from gcalendar import update_event
+    data = request.get_json()
+    try:
+        update_event(
+            event_id,
+            title=data.get('title') or None,
+            start_date=data.get('start_date') or None,
+            end_date=data.get('end_date') or None,
+            time_str=data.get('time') or None,
+            notes=data.get('notes'),
+        )
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/calendar/events/<event_id>', methods=['DELETE'])
+def delete_calendar_event(event_id):
+    from gcalendar import delete_event
+    try:
+        delete_event(event_id)
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/health', methods=['GET'])

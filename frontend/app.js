@@ -54,15 +54,35 @@ function signOut() {
   }
 }
 
+function _setChatPanelHeight() {
+  const panel = document.getElementById('chat-panel');
+  if (window.visualViewport) {
+    panel.style.height = window.visualViewport.height + 'px';
+    panel.style.top = window.visualViewport.offsetTop + 'px';
+  }
+}
+
 function openChat() {
-  document.getElementById('chat-panel').classList.add('chat-open');
+  const panel = document.getElementById('chat-panel');
+  panel.classList.add('chat-open');
   document.getElementById('chat-overlay').classList.remove('hidden');
+  _setChatPanelHeight();
   document.getElementById('msg-input').focus();
 }
 
 function closeChat() {
-  document.getElementById('chat-panel').classList.remove('chat-open');
+  const panel = document.getElementById('chat-panel');
+  panel.classList.remove('chat-open');
+  panel.style.height = '';
+  panel.style.top = '';
   document.getElementById('chat-overlay').classList.add('hidden');
+}
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    const panel = document.getElementById('chat-panel');
+    if (panel.classList.contains('chat-open')) _setChatPanelHeight();
+  });
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -98,6 +118,10 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('add-keyword-btn').addEventListener('click', addKeyword);
   document.getElementById('new-keyword-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addKeyword();
+  });
+  document.getElementById('add-exclude-keyword-btn').addEventListener('click', addExcludeKeyword);
+  document.getElementById('new-exclude-keyword-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addExcludeKeyword();
   });
   document.getElementById('send-btn').addEventListener('click', sendMessage);
   document.getElementById('msg-input').addEventListener('keydown', e => {
@@ -150,6 +174,37 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('list-back-btn').addEventListener('click', closeListScreen);
 
+  // Calendar screens
+  document.getElementById('menu-this-week').addEventListener('click', () => {
+    closeDrawer();
+    openCalendarScreen(0);
+  });
+  document.getElementById('menu-next-week').addEventListener('click', () => {
+    closeDrawer();
+    openCalendarScreen(1);
+  });
+  document.getElementById('calendar-back-btn').addEventListener('click', closeCalendarScreen);
+  document.getElementById('cal-add-btn').addEventListener('click', openAddEventModal);
+
+  // Add event modal
+  document.getElementById('add-event-close-btn').addEventListener('click', closeAddEventModal);
+  document.getElementById('add-event-overlay').addEventListener('click', closeAddEventModal);
+  document.getElementById('add-event-save-btn').addEventListener('click', saveNewCalendarEvent);
+
+  // Calendar event edit drawer
+  document.getElementById('cal-edit-close-btn').addEventListener('click', closeCalendarEventEditDrawer);
+  document.getElementById('cal-edit-overlay').addEventListener('click', closeCalendarEventEditDrawer);
+  document.getElementById('cal-edit-save-btn').addEventListener('click', saveCalendarEventEdit);
+  document.getElementById('cal-edit-delete-btn').addEventListener('click', deleteCalendarEventConfirm);
+
+  // Task detail drawer
+  document.getElementById('task-detail-close-btn').addEventListener('click', closeTaskDetailDrawer);
+  document.getElementById('task-detail-overlay').addEventListener('click', closeTaskDetailDrawer);
+
+  // Date picker modal (right-swipe to calendar)
+  document.getElementById('date-picker-close-btn').addEventListener('click', closeDatePickerModal);
+  document.getElementById('date-picker-overlay').addEventListener('click', closeDatePickerModal);
+
   // Resync button inside Email Filters screen
   document.getElementById('resync-btn').addEventListener('click', () => resyncEmails());
 
@@ -179,8 +234,10 @@ function showMainApp(user) {
   document.getElementById('user-name').textContent = user.name;
   loadEmailFilters();
   loadKeywordFilters();
+  loadExcludeKeywordFilters();
   loadProposals();
   initVoice();
+  initPullToRefresh();
 }
 
 function openMembersScreen() {
@@ -412,8 +469,9 @@ function formatEmailDate(dateStr) {
 
 function buildEmailCard(email, isNew = false) {
   const bodyText = (email.body || email.snippet || '').trim();
-  const preview = bodyText.slice(0, 220).replace(/\n+/g, ' ');
-  const hasMore = bodyText.length > 220;
+  const summary = email.summary || null;
+  const previewText = summary || bodyText.slice(0, 220).replace(/\n+/g, ' ');
+  const hasMore = bodyText.length > 220 || email.html_body;
 
   const wrapper = document.createElement('div');
   wrapper.className = 'email-card-wrapper';
@@ -424,6 +482,7 @@ function buildEmailCard(email, isNew = false) {
   if (isNew) card.classList.add('is-new');
   const accountBadge = email.account ? `<span class="email-account-badge">${escapeHtml(email.account)}</span>` : '';
   const newBadge = isNew ? '<span class="email-new-badge" title="New"></span>' : '';
+  const previewClass = summary ? 'email-preview email-preview-summary' : 'email-preview';
   card.innerHTML = `
     <div class="email-meta">
       <span class="email-sender">${escapeHtml(email.sender)}</span>
@@ -431,20 +490,30 @@ function buildEmailCard(email, isNew = false) {
     </div>
     ${accountBadge}
     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
-    <div class="email-preview">${escapeHtml(preview)}${hasMore ? '…' : ''}</div>
-    ${hasMore ? `
-      <div class="email-full-body hidden">${escapeHtml(bodyText)}</div>
-      <button class="email-expand-btn">Show more ▾</button>
-    ` : ''}
+    <div class="${previewClass}">${escapeHtml(previewText)}${(!summary && bodyText.length > 220) ? '…' : ''}</div>
+    ${hasMore ? '<button class="email-expand-btn">Show more ▾</button>' : ''}
   `;
 
   if (hasMore) {
-    card.querySelector('.email-expand-btn').addEventListener('click', () => {
-      const body = card.querySelector('.email-full-body');
-      const btn = card.querySelector('.email-expand-btn');
-      const expanded = !body.classList.contains('hidden');
-      body.classList.toggle('hidden');
-      btn.textContent = expanded ? 'Show more ▾' : 'Show less ▴';
+    const expandBtn = card.querySelector('.email-expand-btn');
+    let expandedEl = null;
+    expandBtn.addEventListener('click', () => {
+      if (expandedEl) {
+        expandedEl.classList.toggle('hidden');
+        expandBtn.textContent = expandedEl.classList.contains('hidden') ? 'Show more ▾' : 'Show less ▴';
+        return;
+      }
+      if (email.html_body) {
+        expandedEl = document.createElement('div');
+        expandedEl.className = 'email-html-body';
+        expandedEl.innerHTML = sanitizeEmailHtml(email.html_body);
+      } else {
+        expandedEl = document.createElement('div');
+        expandedEl.className = 'email-full-body';
+        expandedEl.textContent = bodyText;
+      }
+      expandBtn.parentNode.insertBefore(expandedEl, expandBtn);
+      expandBtn.textContent = 'Show less ▴';
     });
   }
 
@@ -515,6 +584,31 @@ function buildProposalsSection(card, email) {
 }
 
 function buildProposalRow(p, emailId, card) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'proposal-row-wrapper';
+
+  // Hidden bg: revealed by swiping the row right
+  const bg = document.createElement('div');
+  bg.className = 'proposal-row-bg';
+
+  ALLOWED_EMAILS.forEach(email => {
+    const btn = document.createElement('div');
+    btn.className = `pr-btn pr-btn--${email[0].toLowerCase()}`;
+    btn.textContent = email[0].toUpperCase();
+    btn.dataset.assignee = email;
+    bg.appendChild(btn);
+  });
+  const bothBtn = document.createElement('div');
+  bothBtn.className = 'pr-btn pr-btn--both';
+  bothBtn.innerHTML = `<span>${ALLOWED_EMAILS[0][0].toUpperCase()}</span><span>${ALLOWED_EMAILS[1][0].toUpperCase()}</span>`;
+  bothBtn.dataset.assignee = 'both';
+  bg.appendChild(bothBtn);
+  const skipBtn = document.createElement('div');
+  skipBtn.className = 'pr-btn pr-btn--skip';
+  skipBtn.textContent = '✕';
+  bg.appendChild(skipBtn);
+
+  // Row content
   const row = document.createElement('div');
   row.className = 'proposal-row';
   row.dataset.proposalId = p.id;
@@ -530,7 +624,6 @@ function buildProposalRow(p, emailId, card) {
     notesEl.textContent = p.notes;
     row.appendChild(notesEl);
   }
-
   if (p.date_expression) {
     const dateEl = document.createElement('div');
     dateEl.className = 'proposal-row-date';
@@ -538,57 +631,98 @@ function buildProposalRow(p, emailId, card) {
     row.appendChild(dateEl);
   }
 
-  const actions = document.createElement('div');
-  actions.className = 'proposal-row-actions';
+  wrapper.appendChild(bg);
+  wrapper.appendChild(row);
+  addSwipeToProposalRow(wrapper, row, bg, p.id, emailId, card);
+  return wrapper;
+}
 
-  ALLOWED_EMAILS.forEach(email => {
-    const btn = document.createElement('button');
-    btn.className = `inline-assign-btn inline-assign-btn--${email[0].toLowerCase()}`;
-    btn.textContent = email[0].toUpperCase();
-    btn.title = email;
-    btn.addEventListener('click', () => assignInlineProposal(p.id, email, emailId, row, card));
-    actions.appendChild(btn);
+function addSwipeToProposalRow(wrapper, row, bg, proposalId, emailId, card) {
+  let startX = 0, deltaX = 0, dragging = false, snapped = false;
+  const SNAP_WIDTH = 196;
+
+  function snapBack() {
+    row.style.transition = 'transform 0.25s ease';
+    row.style.transform = 'translateX(0)';
+    snapped = false;
+  }
+
+  row.addEventListener('touchstart', (e) => {
+    if (row.classList.contains('proposal-row--handled')) return;
+    if (snapped) { snapBack(); return; }
+    startX = e.touches[0].clientX;
+    dragging = true;
+    row.style.transition = 'none';
+  }, { passive: true });
+
+  row.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    deltaX = e.touches[0].clientX - startX;
+    if (deltaX > 0) row.style.transform = `translateX(${Math.min(deltaX, SNAP_WIDTH)}px)`;
+  }, { passive: true });
+
+  row.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (deltaX > 50) {
+      row.style.transition = 'transform 0.25s ease';
+      row.style.transform = `translateX(${SNAP_WIDTH}px)`;
+      snapped = true;
+    } else {
+      snapBack();
+    }
+    deltaX = 0;
   });
 
-  const skipBtn = document.createElement('button');
-  skipBtn.className = 'inline-skip-btn';
-  skipBtn.textContent = 'Skip';
-  skipBtn.addEventListener('click', () => skipInlineProposal(p.id, emailId, row, card));
-  actions.appendChild(skipBtn);
+  document.addEventListener('touchstart', (e) => {
+    if (snapped && !wrapper.contains(e.target)) snapBack();
+  }, { passive: true });
 
-  row.appendChild(actions);
-  return row;
+  bg.querySelectorAll('[data-assignee]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      assignInlineProposal(proposalId, btn.dataset.assignee, emailId, row, card);
+      snapBack();
+      bg.style.visibility = 'hidden';
+    });
+  });
+  bg.querySelector('.pr-btn--skip').addEventListener('click', () => {
+    skipInlineProposal(proposalId, emailId, row, card);
+    snapBack();
+    bg.style.visibility = 'hidden';
+  });
 }
 
 async function assignInlineProposal(proposalId, assigneeEmail, emailId, row, card) {
-  row.querySelectorAll('button').forEach(b => b.disabled = true);
+  const badgeHtml = assigneeEmail === 'both'
+    ? `<span class="inline-assignee-badge inline-assign-btn--d">D</span><span class="inline-assignee-badge inline-assign-btn--e">E</span>`
+    : `<span class="inline-assignee-badge inline-assign-btn--${assigneeEmail[0].toLowerCase()}">${assigneeEmail[0].toUpperCase()}</span>`;
+  const status = document.createElement('div');
+  status.className = 'proposal-row-status';
+  status.innerHTML = `<span class="proposal-done-label">✓ Added to list</span>${badgeHtml}`;
+  row.appendChild(status);
+  row.classList.add('proposal-row--handled');
+  checkAllProposalsHandled(emailId, card);
   try {
     await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignee: assigneeEmail })
     });
-    const initial = assigneeEmail[0].toUpperCase();
-    const actions = row.querySelector('.proposal-row-actions');
-    actions.innerHTML = `<span class="proposal-done-label">✓ Added to list</span><span class="inline-assignee-badge inline-assign-btn--${assigneeEmail[0].toLowerCase()}">${initial}</span>`;
-    row.classList.add('proposal-row--handled');
-    checkAllProposalsHandled(emailId, card);
   } catch (err) {
-    row.querySelectorAll('button').forEach(b => b.disabled = false);
     console.error('Failed to assign proposal:', err);
   }
 }
 
 async function skipInlineProposal(proposalId, emailId, row, card) {
-  row.querySelectorAll('button').forEach(b => b.disabled = true);
+  const status = document.createElement('div');
+  status.className = 'proposal-row-status';
+  status.innerHTML = '<span class="proposal-done-label">Skipped</span>';
+  row.appendChild(status);
+  row.classList.add('proposal-row--handled');
+  checkAllProposalsHandled(emailId, card);
   try {
     await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
-    const actions = row.querySelector('.proposal-row-actions');
-    actions.innerHTML = '<span class="proposal-done-label">Skipped</span>';
-    row.classList.add('proposal-row--handled');
-    checkAllProposalsHandled(emailId, card);
   } catch (err) {
-    row.querySelectorAll('button').forEach(b => b.disabled = false);
     console.error('Failed to skip proposal:', err);
   }
 }
@@ -830,31 +964,49 @@ async function loadListScreen() {
       container.innerHTML = '<div class="empty-state">The list is currently empty.</div>';
       return;
     }
+
+    const [DAN, EMILY] = ALLOWED_EMAILS;
+    const groups = [
+      { label: 'Shared',     tasks: data.tasks.filter(t => t.assignee === 'both') },
+      { label: "Dan's",      tasks: data.tasks.filter(t => t.assignee === DAN) },
+      { label: "Emily's",    tasks: data.tasks.filter(t => t.assignee === EMILY) },
+      { label: 'Unassigned', tasks: data.tasks.filter(t => !t.assignee || t.assignee === 'none') },
+    ];
+
     container.innerHTML = '';
-    data.tasks.forEach(task => {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'task-card-wrapper';
-      wrapper.innerHTML = '<div class="swipe-done-bg">Done ✓</div>';
+    groups.forEach(({ label, tasks }) => {
+      if (tasks.length === 0) return;
 
-      const card = document.createElement('div');
-      card.className = 'task-card';
-      const dateHtml = task.due && task.due !== 'none' ? `<span class="task-due">📅 ${task.due}</span>` : '';
-      const assigneeHtml = task.assignee === 'both'
-        ? `<div class="task-assignee-both"><div class="task-assignee task-assignee--${ALLOWED_EMAILS[0][0].toLowerCase()}">${ALLOWED_EMAILS[0][0].toUpperCase()}</div><div class="task-assignee task-assignee--${ALLOWED_EMAILS[1][0].toLowerCase()}">${ALLOWED_EMAILS[1][0].toUpperCase()}</div></div>`
-        : task.assignee
-          ? `<div class="task-assignee task-assignee--${task.assignee[0].toLowerCase()}">${task.assignee[0].toUpperCase()}</div>`
-          : '';
-      card.innerHTML = `
-        <div class="task-main">
-          <div class="task-title">${escapeHtml(task.title)}</div>
-          <div class="task-meta-right">${dateHtml}${assigneeHtml}</div>
-        </div>
-        ${task.notes ? `<div class="task-notes">${escapeHtml(task.notes)}</div>` : ''}
-      `;
+      const heading = document.createElement('div');
+      heading.className = 'list-section-header';
+      heading.textContent = label;
+      container.appendChild(heading);
 
-      wrapper.appendChild(card);
-      container.appendChild(wrapper);
-      addSwipeToComplete(wrapper, card, task.title);
+      tasks.forEach(task => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'task-card-wrapper';
+        wrapper.innerHTML = '<div class="swipe-add-cal-bg">📅 Calendar</div><div class="swipe-done-bg">Done ✓</div>';
+
+        const card = document.createElement('div');
+        card.className = 'task-card';
+        const dateHtml = task.due && task.due !== 'none' ? `<span class="task-due">📅 ${task.due}</span>` : '';
+        const assigneeHtml = task.assignee === 'both'
+          ? `<div class="task-assignee-both"><div class="task-assignee task-assignee--${DAN[0].toLowerCase()}">${DAN[0].toUpperCase()}</div><div class="task-assignee task-assignee--${EMILY[0].toLowerCase()}">${EMILY[0].toUpperCase()}</div></div>`
+          : task.assignee && task.assignee !== 'none'
+            ? `<div class="task-assignee task-assignee--${task.assignee[0].toLowerCase()}">${task.assignee[0].toUpperCase()}</div>`
+            : '';
+        card.innerHTML = `
+          <div class="task-main">
+            <div class="task-title">${escapeHtml(task.title)}</div>
+            <div class="task-meta-right">${dateHtml}${assigneeHtml}</div>
+          </div>
+          ${task.notes ? `<div class="task-notes">${escapeHtml(task.notes)}</div>` : ''}
+        `;
+
+        wrapper.appendChild(card);
+        container.appendChild(wrapper);
+        addSwipeToComplete(wrapper, card, task.title, task);
+      });
     });
   } catch (err) {
     container.textContent = `Error: ${err.message}`;
@@ -863,21 +1015,23 @@ async function loadListScreen() {
 
 // ── Swipe to complete ─────────────────────────────────────────────────────────
 
-function addSwipeToComplete(wrapper, card, title) {
-  let startX = 0;
-  let deltaX = 0;
-  let dragging = false;
+function addSwipeToComplete(wrapper, card, title, task) {
+  let startX = 0, deltaX = 0, dragging = false, didSwipe = false;
 
   card.addEventListener('touchstart', (e) => {
     startX = e.touches[0].clientX;
     dragging = true;
+    didSwipe = false;
     card.style.transition = 'none';
   }, { passive: true });
 
   card.addEventListener('touchmove', (e) => {
     if (!dragging) return;
     deltaX = e.touches[0].clientX - startX;
+    if (Math.abs(deltaX) > 10) didSwipe = true;
     if (deltaX < 0) {
+      card.style.transform = `translateX(${deltaX}px)`;
+    } else if (deltaX > 0) {
       card.style.transform = `translateX(${deltaX}px)`;
     }
   }, { passive: true });
@@ -891,12 +1045,23 @@ function addSwipeToComplete(wrapper, card, title) {
       card.style.opacity = '0';
       card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
       completeTask(title);
+    } else if (deltaX > 80 && task) {
+      card.style.transition = 'transform 0.25s ease';
+      card.style.transform = 'translateX(0)';
+      addTaskToCalendar(task);
     } else {
       card.style.transition = 'transform 0.25s ease';
       card.style.transform = 'translateX(0)';
     }
     deltaX = 0;
   });
+
+  if (task) {
+    card.addEventListener('click', () => {
+      if (didSwipe) return;
+      openTaskDetailDrawer(task);
+    });
+  }
 }
 
 async function completeTask(title) {
@@ -933,7 +1098,8 @@ function addSwipeToDismiss(wrapper, card, emailId) {
   card.addEventListener('touchend', () => {
     if (!dragging) return;
     dragging = false;
-    if (deltaX < -80) {
+    const unhandled = card.querySelectorAll('.proposal-row:not(.proposal-row--handled)');
+    if (deltaX < -80 && unhandled.length === 0) {
       card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
       card.style.transform = 'translateX(-100%)';
       card.style.opacity = '0';
@@ -1135,4 +1301,534 @@ function appendMessage(sender, text, isTyping = false) {
   messages.appendChild(bubble);
   messages.scrollTop = messages.scrollHeight;
   return bubble;
+}
+
+// ── Calendar ──────────────────────────────────────────────────────────────────
+
+let calendarWeekOffset = 0;
+
+function getWeekRange(offset) {
+  const now = new Date();
+  const day = now.getDay();
+  const mondayDelta = day === 0 ? -6 : 1 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + mondayDelta + offset * 7);
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+  return { start: monday, end: sunday };
+}
+
+function formatWeekRange(start, end) {
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  if (start.getMonth() === end.getMonth()) {
+    return `${MONTHS[start.getMonth()]} ${start.getDate()}–${end.getDate()}`;
+  }
+  return `${MONTHS[start.getMonth()]} ${start.getDate()} – ${MONTHS[end.getMonth()]} ${end.getDate()}`;
+}
+
+function _buildCalendarEventRow(e) {
+  const row = document.createElement('div');
+  row.className = 'calendar-event' + (e.all_day ? ' calendar-event--allday' : '');
+
+  let timeStr = '';
+  if (!e.all_day) {
+    const t = new Date(e.start);
+    timeStr = t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  let assigneeBadge = '';
+  const assigneeMatch = (e.description || '').match(/Assigned to:\s*(\w+)/i);
+  if (assigneeMatch) {
+    const who = assigneeMatch[1].toLowerCase();
+    if (who === 'both') {
+      assigneeBadge = `<span class="cal-assignee-badge cal-assignee--d">D</span><span class="cal-assignee-badge cal-assignee--e">E</span>`;
+    } else if (who === 'daniel') {
+      assigneeBadge = `<span class="cal-assignee-badge cal-assignee--d">D</span>`;
+    } else if (who === 'emily') {
+      assigneeBadge = `<span class="cal-assignee-badge cal-assignee--e">E</span>`;
+    }
+  }
+
+  row.innerHTML = `
+    <span class="cal-event-time">${e.all_day ? 'All day' : timeStr}</span>
+    <span class="cal-event-title-row">
+      <span class="cal-event-title">${escapeHtml(e.title)}</span>
+      ${assigneeBadge ? `<span class="cal-assignee-wrap">${assigneeBadge}</span>` : ''}
+    </span>
+    ${e.location ? `<span class="cal-event-location">${escapeHtml(e.location)}</span>` : ''}
+  `;
+
+  row.addEventListener('click', () => openCalendarEventEditDrawer(e));
+  return row;
+}
+
+async function openCalendarScreen(weekOffset) {
+  calendarWeekOffset = weekOffset;
+  const { start, end } = getWeekRange(weekOffset);
+  document.getElementById('calendar-screen-title').textContent = formatWeekRange(start, end);
+  const content = document.getElementById('calendar-content');
+  content.innerHTML = '<p class="empty-state">Loading…</p>';
+  document.getElementById('calendar-screen').classList.remove('hidden');
+
+  await _loadCalendarContent(content, start, end);
+  _attachCalendarSwipe(content);
+}
+
+async function _loadCalendarContent(content, start, end) {
+  const startISO = start.toISOString();
+  const endISO = end.toISOString();
+  try {
+    const data = await fetch(
+      `${BACKEND_URL}/calendar/events?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`
+    ).then(r => r.json());
+
+    if (data.error) throw new Error(data.error);
+
+    const events = data.events || [];
+    if (events.length === 0) {
+      content.innerHTML = '<p class="empty-state">Nothing on the calendar this week.</p>';
+      return;
+    }
+
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    const byDay = {};
+    events.forEach(e => {
+      const dateKey = e.start.substring(0, 10);
+      if (!byDay[dateKey]) byDay[dateKey] = [];
+      byDay[dateKey].push(e);
+    });
+
+    content.innerHTML = '';
+    Object.keys(byDay).sort().forEach(dateKey => {
+      const d = new Date(dateKey + 'T12:00:00');
+      const header = document.createElement('div');
+      header.className = 'calendar-day-header';
+      header.textContent = `${DAY_NAMES[d.getDay()]}, ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+      content.appendChild(header);
+      byDay[dateKey].forEach(e => content.appendChild(_buildCalendarEventRow(e)));
+    });
+  } catch (err) {
+    content.innerHTML = `<p class="empty-state">Could not load calendar: ${err.message}</p>`;
+  }
+}
+
+let _calSwipeController = null;
+
+function _attachCalendarSwipe(content) {
+  if (_calSwipeController) _calSwipeController.abort();
+  _calSwipeController = new AbortController();
+  const signal = _calSwipeController.signal;
+  let startX = 0, startY = 0, active = false;
+
+  content.addEventListener('touchstart', (e) => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    active = true;
+  }, { passive: true, signal });
+
+  content.addEventListener('touchend', async (e) => {
+    if (!active) return;
+    active = false;
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    calendarWeekOffset += dx < 0 ? 1 : -1;
+    const { start, end } = getWeekRange(calendarWeekOffset);
+    document.getElementById('calendar-screen-title').textContent = formatWeekRange(start, end);
+    content.innerHTML = '<p class="empty-state">Loading…</p>';
+    await _loadCalendarContent(content, start, end);
+    _attachCalendarSwipe(content);
+  }, { passive: true, signal });
+}
+
+function closeCalendarScreen() {
+  document.getElementById('calendar-screen').classList.add('hidden');
+}
+
+// ── HTML sanitizer ────────────────────────────────────────────────────────────
+
+function sanitizeEmailHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  // Remove dangerous elements
+  ['script', 'style', 'iframe', 'form', 'input', 'button', 'object', 'embed', 'meta', 'link', 'base'].forEach(tag => {
+    doc.querySelectorAll(tag).forEach(el => el.remove());
+  });
+  doc.body.querySelectorAll('*').forEach(el => {
+    // Strip event handlers
+    Array.from(el.attributes).forEach(attr => {
+      if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+    });
+    // Sanitize links
+    if (el.tagName === 'A') {
+      const href = el.getAttribute('href') || '';
+      if (href.startsWith('javascript:') || href.startsWith('data:') || href.startsWith('vbscript:')) {
+        el.removeAttribute('href');
+      }
+      el.setAttribute('target', '_blank');
+      el.setAttribute('rel', 'noopener noreferrer');
+    }
+    // Limit inline styles to safe properties only (strip them entirely)
+    if (el.hasAttribute('style')) el.removeAttribute('style');
+  });
+  return doc.body.innerHTML;
+}
+
+// ── Exclude Keyword Filters ───────────────────────────────────────────────────
+
+async function loadExcludeKeywordFilters() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/exclude-keyword-filters`);
+    const data = await res.json();
+    renderExcludeKeywords(data.keywords || []);
+  } catch (err) {
+    console.error('Failed to load exclude keywords:', err);
+  }
+}
+
+function renderExcludeKeywords(keywords) {
+  const list = document.getElementById('exclude-keywords-list');
+  list.innerHTML = '';
+  if (keywords.length === 0) {
+    list.innerHTML = '<p class="empty-state" style="padding: 4px 0 8px; font-size: 0.85rem;">No exclude keywords added yet.</p>';
+    return;
+  }
+  keywords.forEach(kw => {
+    const row = document.createElement('div');
+    row.className = 'sender-row';
+    row.innerHTML = `
+      <span>${escapeHtml(kw)}</span>
+      <button class="remove-sender-btn">Remove</button>
+    `;
+    row.querySelector('.remove-sender-btn').addEventListener('click', () => removeExcludeKeyword(kw));
+    list.appendChild(row);
+  });
+}
+
+async function addExcludeKeyword() {
+  const input = document.getElementById('new-exclude-keyword-input');
+  const keyword = input.value.trim().toLowerCase();
+  if (!keyword) return;
+  try {
+    await fetch(`${BACKEND_URL}/exclude-keyword-filters`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword })
+    });
+    input.value = '';
+    loadExcludeKeywordFilters();
+  } catch (err) {
+    alert(`Failed to add exclude keyword: ${err.message}`);
+  }
+}
+
+async function removeExcludeKeyword(keyword) {
+  try {
+    await fetch(`${BACKEND_URL}/exclude-keyword-filters/${encodeURIComponent(keyword)}`, { method: 'DELETE' });
+    loadExcludeKeywordFilters();
+  } catch (err) {
+    alert(`Failed to remove exclude keyword: ${err.message}`);
+  }
+}
+
+// ── Pull-to-refresh ───────────────────────────────────────────────────────────
+
+function initPullToRefresh() {
+  let startY = 0, pulling = false, triggered = false;
+  const indicator = document.getElementById('pull-to-refresh');
+
+  document.addEventListener('touchstart', (e) => {
+    const screenOpen = document.querySelectorAll('.screen:not(.hidden)').length > 0
+      || document.querySelectorAll('.modal-overlay:not(.hidden)').length > 0
+      || document.getElementById('chat-panel').classList.contains('chat-open');
+    if (window.scrollY === 0 && !screenOpen) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+      triggered = false;
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!pulling) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 72 && !triggered) {
+      triggered = true;
+      indicator.classList.remove('hidden');
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', async () => {
+    if (!pulling) return;
+    pulling = false;
+    if (!triggered) return;
+    try {
+      await loadEmailFilters();
+    } finally {
+      indicator.classList.add('hidden');
+      triggered = false;
+    }
+  }, { passive: true });
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+function showToast(message, durationMs = 2500) {
+  const toast = document.getElementById('toast');
+  toast.textContent = message;
+  toast.classList.remove('hidden', 'toast-fading');
+  toast.classList.add('toast-visible');
+  setTimeout(() => {
+    toast.classList.remove('toast-visible');
+    toast.classList.add('toast-fading');
+    setTimeout(() => toast.classList.add('hidden'), 350);
+  }, durationMs);
+}
+
+// ── Add Calendar Event Modal ──────────────────────────────────────────────────
+
+function openAddEventModal() {
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('add-event-title').value = '';
+  document.getElementById('add-event-date').value = today;
+  document.getElementById('add-event-time').value = '';
+  document.getElementById('add-event-notes').value = '';
+  document.getElementById('add-event-overlay').classList.remove('hidden');
+  document.getElementById('add-event-modal').classList.remove('hidden');
+  document.getElementById('add-event-title').focus();
+}
+
+function closeAddEventModal() {
+  document.getElementById('add-event-overlay').classList.add('hidden');
+  document.getElementById('add-event-modal').classList.add('hidden');
+}
+
+async function saveNewCalendarEvent() {
+  const title = document.getElementById('add-event-title').value.trim();
+  const date = document.getElementById('add-event-date').value;
+  const time = document.getElementById('add-event-time').value || null;
+  const notes = document.getElementById('add-event-notes').value.trim() || null;
+  if (!title || !date) { showToast('Title and date are required.'); return; }
+  const btn = document.getElementById('add-event-save-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${BACKEND_URL}/calendar/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, date, time, notes })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Failed');
+    closeAddEventModal();
+    showToast('Event added to calendar');
+    // Reload calendar content
+    const { start, end } = getWeekRange(calendarWeekOffset);
+    const content = document.getElementById('calendar-content');
+    content.innerHTML = '<p class="empty-state">Loading…</p>';
+    await _loadCalendarContent(content, start, end);
+    _attachCalendarSwipe(content);
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Calendar Event Edit Drawer ────────────────────────────────────────────────
+
+let _editingCalEvent = null;
+
+function openCalendarEventEditDrawer(event) {
+  _editingCalEvent = event;
+  document.getElementById('cal-edit-title').value = event.title || '';
+  const dateStr = event.start ? event.start.substring(0, 10) : '';
+  document.getElementById('cal-edit-date').value = dateStr;
+  const timeStr = (!event.all_day && event.start && event.start.length > 10)
+    ? new Date(event.start).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false })
+    : '';
+  document.getElementById('cal-edit-time').value = timeStr;
+  document.getElementById('cal-edit-notes').value = event.description || '';
+  document.getElementById('cal-edit-overlay').classList.remove('hidden');
+  document.getElementById('cal-edit-drawer').classList.remove('hidden');
+}
+
+function closeCalendarEventEditDrawer() {
+  _editingCalEvent = null;
+  document.getElementById('cal-edit-overlay').classList.add('hidden');
+  document.getElementById('cal-edit-drawer').classList.add('hidden');
+}
+
+async function saveCalendarEventEdit() {
+  if (!_editingCalEvent) return;
+  const title = document.getElementById('cal-edit-title').value.trim();
+  const start_date = document.getElementById('cal-edit-date').value;
+  const time = document.getElementById('cal-edit-time').value || null;
+  const notes = document.getElementById('cal-edit-notes').value.trim();
+  const btn = document.getElementById('cal-edit-save-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${BACKEND_URL}/calendar/events/${_editingCalEvent.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, start_date, time, notes })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Failed');
+    closeCalendarEventEditDrawer();
+    showToast('Event updated');
+    const { start, end } = getWeekRange(calendarWeekOffset);
+    const content = document.getElementById('calendar-content');
+    content.innerHTML = '<p class="empty-state">Loading…</p>';
+    await _loadCalendarContent(content, start, end);
+    _attachCalendarSwipe(content);
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteCalendarEventConfirm() {
+  if (!_editingCalEvent) return;
+  if (!confirm(`Delete "${_editingCalEvent.title}"?`)) return;
+  const btn = document.getElementById('cal-edit-delete-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${BACKEND_URL}/calendar/events/${_editingCalEvent.id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Failed');
+    closeCalendarEventEditDrawer();
+    showToast('Event deleted');
+    const { start, end } = getWeekRange(calendarWeekOffset);
+    const content = document.getElementById('calendar-content');
+    content.innerHTML = '<p class="empty-state">Loading…</p>';
+    await _loadCalendarContent(content, start, end);
+    _attachCalendarSwipe(content);
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Task Detail Drawer ────────────────────────────────────────────────────────
+
+function openTaskDetailDrawer(task) {
+  const body = document.getElementById('task-detail-body');
+  const dueHtml = task.due && task.due !== 'none'
+    ? `<div class="task-detail-meta">📅 Due: ${escapeHtml(task.due)}</div>` : '';
+  const notesHtml = task.notes
+    ? `<div class="task-detail-notes">${escapeHtml(task.notes)}</div>` : '';
+
+  body.innerHTML = `
+    <div class="task-detail-title">${escapeHtml(task.title)}</div>
+    ${dueHtml}
+    ${notesHtml}
+    ${task.source_email_id ? '<div id="task-source-placeholder" class="task-source-tag"><span class="task-source-icon">✉️</span><span class="task-source-info"><span class="task-source-subject">Loading source email…</span></span></div>' : ''}
+    <button class="task-detail-edit-btn" id="task-detail-edit-btn">Edit via Chat</button>
+  `;
+
+  if (task.source_email_id) {
+    _loadTaskSourceEmail(task.source_email_id);
+  }
+
+  document.getElementById('task-detail-edit-btn').addEventListener('click', () => {
+    closeTaskDetailDrawer();
+    openChat();
+    setTimeout(() => {
+      const input = document.getElementById('msg-input');
+      input.value = `I'd like to edit the task: "${task.title}"`;
+      input.focus();
+    }, 300);
+  });
+
+  document.getElementById('task-detail-overlay').classList.remove('hidden');
+  document.getElementById('task-detail-drawer').classList.remove('hidden');
+}
+
+async function _loadTaskSourceEmail(emailId) {
+  try {
+    const res = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}`);
+    const data = await res.json();
+    const placeholder = document.getElementById('task-source-placeholder');
+    if (!placeholder) return;
+    if (data.email) {
+      const e = data.email;
+      placeholder.innerHTML = `
+        <span class="task-source-icon">✉️</span>
+        <span class="task-source-info">
+          <span class="task-source-subject">${escapeHtml(e.subject || '(No Subject)')}</span>
+          <span class="task-source-sender">${escapeHtml(e.sender)} · ${escapeHtml(formatEmailDate(e.date))}</span>
+        </span>
+      `;
+    } else {
+      placeholder.remove();
+    }
+  } catch {
+    const placeholder = document.getElementById('task-source-placeholder');
+    if (placeholder) placeholder.remove();
+  }
+}
+
+function closeTaskDetailDrawer() {
+  document.getElementById('task-detail-overlay').classList.add('hidden');
+  document.getElementById('task-detail-drawer').classList.add('hidden');
+}
+
+// ── Right-swipe task → Add to Calendar ───────────────────────────────────────
+
+let _pendingCalendarTask = null;
+
+function addTaskToCalendar(task) {
+  const due = task.due && task.due !== 'none' ? task.due : null;
+  if (due) {
+    _doAddTaskToCalendar(task.title, due);
+  } else {
+    openDatePickerModal(task);
+  }
+}
+
+async function _doAddTaskToCalendar(title, dateStr) {
+  try {
+    const res = await fetch(`${BACKEND_URL}/calendar/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, date: dateStr })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast('Added to calendar ✓');
+    } else {
+      showToast(`Error: ${data.error || 'Failed'}`);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  }
+}
+
+function openDatePickerModal(task) {
+  _pendingCalendarTask = task;
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('date-picker-task-title').textContent = task.title;
+  document.getElementById('date-picker-input').value = today;
+  document.getElementById('date-picker-overlay').classList.remove('hidden');
+  document.getElementById('date-picker-modal').classList.remove('hidden');
+
+  const confirmBtn = document.getElementById('date-picker-confirm-btn');
+  confirmBtn.onclick = async () => {
+    const date = document.getElementById('date-picker-input').value;
+    if (!date) return;
+    closeDatePickerModal();
+    await _doAddTaskToCalendar(_pendingCalendarTask.title, date);
+    _pendingCalendarTask = null;
+  };
+}
+
+function closeDatePickerModal() {
+  document.getElementById('date-picker-overlay').classList.add('hidden');
+  document.getElementById('date-picker-modal').classList.add('hidden');
+  _pendingCalendarTask = null;
 }

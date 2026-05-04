@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=17.8" />
+  <link rel="stylesheet" href="style.css?v=19.0" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
@@ -32,6 +32,8 @@
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
         <li class="drawer-item drawer-item--soon">About</li>
+        <li class="drawer-item" id="menu-this-week">This Week</li>
+        <li class="drawer-item" id="menu-next-week">Next Week</li>
         <li class="drawer-item" id="menu-reviewed">Recently Reviewed</li>
         <li class="drawer-item" id="menu-members">Members</li>
         <li class="drawer-item" id="menu-usage">Usage</li>
@@ -51,11 +53,19 @@
           <button id="add-sender-btn">Add</button>
         </div>
 
-        <div class="filter-section-divider">Keywords</div>
+        <div class="filter-section-divider">Include Keywords</div>
         <div id="keywords-list"></div>
         <div id="add-keyword-row">
           <input id="new-keyword-input" type="text" placeholder="Add keyword..." />
           <button id="add-keyword-btn">Add</button>
+        </div>
+
+        <div class="filter-section-divider filter-section-divider--exclude">Exclude Keywords</div>
+        <p class="filter-section-hint">Emails containing these words will be hidden.</p>
+        <div id="exclude-keywords-list"></div>
+        <div id="add-exclude-keyword-row">
+          <input id="new-exclude-keyword-input" type="text" placeholder="Add word to exclude..." />
+          <button id="add-exclude-keyword-btn">Add</button>
         </div>
       </div>
     </div>
@@ -110,16 +120,99 @@
       </div>
     </div>
 
+    <div id="calendar-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="calendar-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title" id="calendar-screen-title">This Week</span>
+        <button id="cal-add-btn" class="cal-add-btn" title="Add event">+</button>
+      </div>
+      <div class="screen-body">
+        <div id="calendar-content"></div>
+      </div>
+    </div>
+
+    <!-- Add Event Modal -->
+    <div id="add-event-overlay" class="modal-overlay hidden"></div>
+    <div id="add-event-modal" class="bottom-modal hidden">
+      <div class="bottom-modal-header">
+        <span class="bottom-modal-title">Add Event</span>
+        <button id="add-event-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="bottom-modal-body">
+        <label class="form-label">Title <span class="required">*</span></label>
+        <input id="add-event-title" type="text" class="form-input" placeholder="Event title" />
+        <label class="form-label">Date <span class="required">*</span></label>
+        <input id="add-event-date" type="date" class="form-input" />
+        <label class="form-label">Time <span class="optional">(optional — omit for all-day)</span></label>
+        <input id="add-event-time" type="time" class="form-input" />
+        <label class="form-label">Notes <span class="optional">(optional)</span></label>
+        <textarea id="add-event-notes" class="form-input form-textarea" placeholder="Notes…" rows="2"></textarea>
+        <button id="add-event-save-btn" class="modal-save-btn">Save Event</button>
+      </div>
+    </div>
+
+    <!-- Calendar Event Edit Drawer -->
+    <div id="cal-edit-overlay" class="modal-overlay hidden"></div>
+    <div id="cal-edit-drawer" class="bottom-modal hidden">
+      <div class="bottom-modal-header">
+        <span class="bottom-modal-title">Edit Event</span>
+        <button id="cal-edit-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="bottom-modal-body">
+        <label class="form-label">Title</label>
+        <input id="cal-edit-title" type="text" class="form-input" />
+        <label class="form-label">Date</label>
+        <input id="cal-edit-date" type="date" class="form-input" />
+        <label class="form-label">Time <span class="optional">(optional)</span></label>
+        <input id="cal-edit-time" type="time" class="form-input" />
+        <label class="form-label">Notes</label>
+        <textarea id="cal-edit-notes" class="form-input form-textarea" rows="2"></textarea>
+        <button id="cal-edit-save-btn" class="modal-save-btn">Save Changes</button>
+        <button id="cal-edit-delete-btn" class="modal-delete-btn">Delete Event</button>
+      </div>
+    </div>
+
+    <!-- Task Detail Drawer -->
+    <div id="task-detail-overlay" class="modal-overlay hidden"></div>
+    <div id="task-detail-drawer" class="bottom-modal hidden">
+      <div class="bottom-modal-header">
+        <span class="bottom-modal-title">Task Detail</span>
+        <button id="task-detail-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="bottom-modal-body" id="task-detail-body"></div>
+    </div>
+
+    <!-- Date Picker Modal (right-swipe to calendar) -->
+    <div id="date-picker-overlay" class="modal-overlay hidden"></div>
+    <div id="date-picker-modal" class="bottom-modal hidden">
+      <div class="bottom-modal-header">
+        <span class="bottom-modal-title">Pick a Date</span>
+        <button id="date-picker-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="bottom-modal-body">
+        <p id="date-picker-task-title" class="date-picker-task-name"></p>
+        <label class="form-label">Date <span class="required">*</span></label>
+        <input id="date-picker-input" type="date" class="form-input" />
+        <button id="date-picker-confirm-btn" class="modal-save-btn">Add to Calendar</button>
+      </div>
+    </div>
+
     <div id="login-screen">
       <p class="login-prompt">Sign in to continue</p>
       <div class="g_id_signin"></div>
       <p id="login-error" class="hidden">Access denied. This app is private.</p>
     </div>
 
+    <div id="toast" class="toast hidden"></div>
+
     <div id="main-app" class="hidden">
       <div id="user-bar">
         <span id="user-name"></span>
         <button id="sign-out-btn">Sign out</button>
+      </div>
+
+      <div id="pull-to-refresh" class="pull-to-refresh hidden">
+        <div class="ptr-spinner"></div>
       </div>
 
       <div id="email-search-bar">
@@ -146,6 +239,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=11.9"></script>
+  <script src="app.js?v=13.0"></script>
 </body>
 </html>

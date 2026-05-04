@@ -68,3 +68,33 @@ Emails to review:
     except Exception as e:
         print(f"Email scan error: {e}")
         return {}
+
+
+def summarize_emails(emails):
+    """Generate max-140-char summaries for a list of emails. Returns dict email_id -> summary."""
+    if not emails:
+        return {}
+
+    blocks = []
+    for e in emails:
+        body = (e.get('body') or e.get('snippet', ''))[:600]
+        blocks.append(f"EMAIL_ID: {e['id']}\nSubject: {e['subject']}\nFrom: {e['sender']}\nBody: {body}")
+
+    prompt = """Summarize each email in ONE sentence of 140 characters or fewer. Be specific and actionable.
+Return ONLY valid JSON: [{"email_id": "<id>", "summary": "<summary>"}]
+
+Emails:
+
+""" + "\n\n---\n\n".join(blocks)
+
+    try:
+        model = genai.GenerativeModel(
+            model_name='gemini-2.5-flash',
+            generation_config={'response_mime_type': 'application/json'}
+        )
+        response = model.generate_content(prompt)
+        items = json.loads(response.text)
+        return {item['email_id']: item['summary'][:140] for item in items if 'email_id' in item and 'summary' in item}
+    except Exception as e:
+        print(f"Summarize error: {e}")
+        return {}

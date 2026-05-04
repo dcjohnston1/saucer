@@ -117,7 +117,8 @@ def _human_readable(status, value):
 
 def add_todo(title: str, date_expression: str = None, notes: str = None,
              owner: str = None, priority: str = None, recurrence: str = None,
-             location: str = None, urgency: str = None, assignee: str = None):
+             location: str = None, urgency: str = None, assignee: str = None,
+             source_email_id: str = None):
     """Add a to-do item to the shared household Google Doc.
 
     Args:
@@ -142,7 +143,7 @@ def add_todo(title: str, date_expression: str = None, notes: str = None,
     else:
         added = today.strftime("%Y-%m-%d")
         due = value if status in ("date", "range") else "none"
-        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency, assignee)
+        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency, assignee, source_email_id=source_email_id)
         human = _human_readable(status, value)
         return {
             "status": "ok",
@@ -151,15 +152,40 @@ def add_todo(title: str, date_expression: str = None, notes: str = None,
         }
 
 
-def _recent_emails_context(n=5):
+def search_emails(query: str, limit: int = 3):
+    """Search household emails by keyword, sender name, or subject.
+
+    Args:
+        query: Search term — sender name, subject keyword, or topic (e.g. "Brenda Bennett", "STAR testing", "Procare").
+        limit: Maximum number of emails to return. Default 3.
+    """
     emails = read_json('saucer-emails.json', default=[])
-    recent = sorted(emails, key=lambda e: e.get('date', ''), reverse=True)[:n]
-    if not recent:
-        return ""
-    lines = []
-    for e in recent:
-        lines.append(f"- [{e.get('date', '?')}] From: {e.get('sender', '?')} | Subject: {e.get('subject', '?')}\n  {e.get('snippet', e.get('body', ''))[:300]}")
-    return "RECENT EMAILS (most recent 5):\n" + "\n".join(lines)
+    q = query.lower()
+    matches = []
+    for e in emails:
+        haystack = ' '.join([
+            e.get('sender', ''),
+            e.get('subject', ''),
+            e.get('body', '') or e.get('snippet', ''),
+        ]).lower()
+        if q in haystack:
+            matches.append(e)
+    matches.sort(key=lambda e: e.get('date', ''), reverse=True)
+    results = matches[:limit]
+    if not results:
+        return {"results": [], "message": f"No emails found matching '{query}'."}
+    formatted = []
+    for e in results:
+        body = (e.get('body', '') or e.get('snippet', ''))[:2000]
+        attachments = [a.get('filename', '') for a in e.get('attachments', [])]
+        formatted.append({
+            "date": e.get('date', ''),
+            "sender": e.get('sender', ''),
+            "subject": e.get('subject', ''),
+            "body": body,
+            "attachments": attachments,
+        })
+    return {"results": formatted}
 
 
 def process_message(user, message, history=None):
@@ -167,10 +193,7 @@ def process_message(user, message, history=None):
     today = datetime.now(_tz())
     date_line = f"TODAY: {today.strftime('%A, %B %-d, %Y')}"
 
-    email_context = _recent_emails_context()
     full_system = SYSTEM_PROMPT + f"\n\n{date_line}\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
-    if email_context:
-        full_system += f"\n\n{email_context}"
 
     # Convert history to Gemini format
     chat_history = []
@@ -179,11 +202,11 @@ def process_message(user, message, history=None):
             role = 'user' if m['role'] == 'user' else 'model'
             chat_history.append({'role': role, 'parts': [m['content']]})
 
-    # Initialize model with tool
+    # Initialize model with tools
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
-        tools=[add_todo]
+        tools=[add_todo, search_emails]
     )
 
     # Start chat with history and automatic function calling

@@ -39,7 +39,7 @@ def complete_task(title):
 def _normalize(title):
     return title.strip().lower()
 
-def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None, assignee=None):
+def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None, assignee=None, source_email_id=None):
     existing = read_doc()
     title_norm = _normalize(title)
     for line in existing.split('\n'):
@@ -62,6 +62,8 @@ def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recu
         line += f" | notes:{notes}"
     if assignee:
         line += f" | assignee:{assignee}"
+    if source_email_id:
+        line += f" | source_email_id:{source_email_id}"
     line += "\n"
 
     service = get_service()

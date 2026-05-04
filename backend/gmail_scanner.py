@@ -119,9 +119,9 @@ def _scan_account(service, account_label, sender_filter=None, keyword_filter=Non
     elif sender_filter:
         match_clauses.append(f'from:{sender_filter}')
     if isinstance(keyword_filter, list) and keyword_filter:
-        match_clauses.extend(keyword_filter)
+        match_clauses.extend(f'"{k}"' if ' ' in k else k for k in keyword_filter)
     elif keyword_filter:
-        match_clauses.append(keyword_filter)
+        match_clauses.append(f'"{keyword_filter}"' if ' ' in keyword_filter else keyword_filter)
     if match_clauses:
         query_parts.append('(' + ' OR '.join(match_clauses) + ')')
 

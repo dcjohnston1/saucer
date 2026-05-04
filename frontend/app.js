@@ -129,6 +129,13 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('members-back-btn').addEventListener('click', closeMembersScreen);
 
+  // Usage screen
+  document.getElementById('menu-usage').addEventListener('click', () => {
+    closeDrawer();
+    openUsageScreen();
+  });
+  document.getElementById('usage-back-btn').addEventListener('click', closeUsageScreen);
+
   // List screen
   document.getElementById('menu-list').addEventListener('click', () => {
     closeDrawer();
@@ -189,6 +196,35 @@ function openMembersScreen() {
 
 function closeMembersScreen() {
   document.getElementById('members-screen').classList.add('hidden');
+}
+
+// ── Usage ─────────────────────────────────────────────────────────────────────
+
+async function openUsageScreen() {
+  const content = document.getElementById('usage-content');
+  content.innerHTML = '<p class="empty-state">Loading…</p>';
+  document.getElementById('usage-screen').classList.remove('hidden');
+  try {
+    const data = await fetch(`${BACKEND_URL}/stats`).then(r => r.json());
+    const tokens = (data.lifetime_tokens || 0).toLocaleString();
+    const messages = (data.chat_messages || 0).toLocaleString();
+    content.innerHTML = `
+      <div class="usage-stat">
+        <div class="usage-stat-label">Lifetime tokens used</div>
+        <div class="usage-stat-value">${tokens}</div>
+      </div>
+      <div class="usage-stat">
+        <div class="usage-stat-label">Chat messages sent</div>
+        <div class="usage-stat-value">${messages}</div>
+      </div>
+    `;
+  } catch {
+    content.innerHTML = '<p class="empty-state">Could not load stats.</p>';
+  }
+}
+
+function closeUsageScreen() {
+  document.getElementById('usage-screen').classList.add('hidden');
 }
 
 // ── Email Filters ─────────────────────────────────────────────────────────────
@@ -378,12 +414,13 @@ function buildEmailCard(email, isNew = false) {
 
   const card = document.createElement('div');
   card.className = 'email-card';
+  if (isNew) card.classList.add('is-new');
   const accountBadge = email.account ? `<span class="email-account-badge">${escapeHtml(email.account)}</span>` : '';
-  const newTag = isNew ? '<span class="email-new-tag">new</span>' : '';
+  const newBadge = isNew ? '<span class="email-new-badge" title="New"></span>' : '';
   card.innerHTML = `
     <div class="email-meta">
       <span class="email-sender">${escapeHtml(email.sender)}</span>
-      <div class="email-meta-right-group">${newTag}<span class="email-date">${escapeHtml(formatEmailDate(email.date))}</span></div>
+      <div class="email-meta-right-group">${newBadge}<span class="email-date">${escapeHtml(formatEmailDate(email.date))}</span></div>
     </div>
     ${accountBadge}
     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>

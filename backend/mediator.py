@@ -6,6 +6,7 @@ import dateparser
 
 from prompts import SYSTEM_PROMPT
 from gdocs import read_doc, append_to_doc
+from gcs import read_json, write_json
 
 # Configure Gemini
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -150,12 +151,26 @@ def add_todo(title: str, date_expression: str = None, notes: str = None,
         }
 
 
+def _recent_emails_context(n=5):
+    emails = read_json('saucer-emails.json', default=[])
+    recent = sorted(emails, key=lambda e: e.get('date', ''), reverse=True)[:n]
+    if not recent:
+        return ""
+    lines = []
+    for e in recent:
+        lines.append(f"- [{e.get('date', '?')}] From: {e.get('sender', '?')} | Subject: {e.get('subject', '?')}\n  {e.get('snippet', e.get('body', ''))[:300]}")
+    return "RECENT EMAILS (most recent 5):\n" + "\n".join(lines)
+
+
 def process_message(user, message, history=None):
     doc_contents = read_doc()
     today = datetime.now(_tz())
     date_line = f"TODAY: {today.strftime('%A, %B %-d, %Y')}"
 
+    email_context = _recent_emails_context()
     full_system = SYSTEM_PROMPT + f"\n\n{date_line}\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
+    if email_context:
+        full_system += f"\n\n{email_context}"
 
     # Convert history to Gemini format
     chat_history = []
@@ -176,5 +191,15 @@ def process_message(user, message, history=None):
 
     # Send message
     response = chat.send_message(f"{user}: {message}")
+
+    try:
+        tokens = getattr(response.usage_metadata, 'total_token_count', 0) or 0
+        if tokens > 0:
+            stats = read_json('saucer-stats.json', {})
+            stats['lifetime_tokens'] = stats.get('lifetime_tokens', 0) + tokens
+            stats['chat_messages'] = stats.get('chat_messages', 0) + 1
+            write_json('saucer-stats.json', stats)
+    except Exception:
+        pass
 
     return response.text

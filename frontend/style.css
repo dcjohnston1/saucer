@@ -772,17 +772,18 @@ mark.search-highlight {
   white-space: nowrap;
 }
 
-.email-new-tag {
+.email-new-badge {
   display: inline-block;
-  background: #27ae60;
-  color: #fff;
-  font-size: 0.62rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 2px 7px;
-  border-radius: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e74c3c;
   flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(231, 76, 60, 0.25);
+}
+
+.email-card.is-new {
+  border-left-color: #e74c3c;
 }
 
 .email-account-badge {
@@ -1126,4 +1127,23 @@ body { overflow-y: auto; height: auto; }
 @media (max-width: 480px) {
   body { padding: 12px; }
   header { margin-bottom: 16px; }
+}
+
+/* Usage screen */
+.usage-stat {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.usage-stat:last-child { border-bottom: none; }
+.usage-stat-label {
+  font-size: 0.8rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.usage-stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text, #111827);
 }

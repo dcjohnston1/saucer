@@ -376,6 +376,16 @@ def remove_keyword_filter(keyword):
     return jsonify({'ok': True})
 
 
+@app.route('/stats', methods=['GET'])
+def get_stats():
+    from gcs import read_json
+    stats = read_json('saucer-stats.json', {})
+    return jsonify({
+        'lifetime_tokens': stats.get('lifetime_tokens', 0),
+        'chat_messages': stats.get('chat_messages', 0),
+    })
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})

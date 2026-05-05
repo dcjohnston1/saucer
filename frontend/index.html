@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=20.0" />
+  <link rel="stylesheet" href="style.css?v=21.0" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
@@ -37,6 +37,7 @@
         <li class="drawer-item" id="menu-reviewed">Recently Reviewed</li>
         <li class="drawer-item" id="menu-members">Members</li>
         <li class="drawer-item" id="menu-usage">Usage</li>
+        <li class="drawer-item" id="menu-context">My Profile</li>
       </ul>
     </nav>
 
@@ -117,6 +118,30 @@
       </div>
       <div class="screen-body">
         <div id="usage-content"></div>
+      </div>
+    </div>
+
+    <div id="context-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="context-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title">My Profile</span>
+      </div>
+      <div class="screen-body">
+        <div class="filter-section-divider">My Roles</div>
+        <p class="filter-section-hint">What you handle in the household (e.g., "I handle school stuff")</p>
+        <div id="roles-list"></div>
+        <div id="add-role-row">
+          <input id="new-role-input" type="text" placeholder="Add a role..." />
+          <button id="add-role-btn">Add</button>
+        </div>
+
+        <div class="filter-section-divider">My Preferences</div>
+        <p class="filter-section-hint">How you like things to work (e.g., "I prefer email summaries")</p>
+        <div id="preferences-list"></div>
+        <div id="add-preference-row">
+          <input id="new-preference-input" type="text" placeholder="Add a preference..." />
+          <button id="add-preference-btn">Add</button>
+        </div>
       </div>
     </div>
 
@@ -239,6 +264,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=14.1"></script>
+  <script src="app.js?v=16.1"></script>
 </body>
 </html>

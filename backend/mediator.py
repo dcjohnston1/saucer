@@ -7,6 +7,7 @@ import dateparser
 from prompts import SYSTEM_PROMPT
 from gdocs import read_doc, append_to_doc
 from gcs import read_json, write_json
+from logger import get_action_summary
 
 # Configure Gemini
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -168,7 +169,8 @@ def search_emails(query: str, limit: int = 3):
             e.get('subject', ''),
             e.get('body', '') or e.get('snippet', ''),
         ]).lower()
-        if q in haystack:
+        tokens = q.split()
+        if all(t in haystack for t in tokens):
             matches.append(e)
     matches.sort(key=lambda e: e.get('date', ''), reverse=True)
     results = matches[:limit]
@@ -188,12 +190,45 @@ def search_emails(query: str, limit: int = 3):
     return {"results": formatted}
 
 
+def _load_user_context():
+    from google.cloud import firestore as _fs
+    db = _fs.Client(project='mediationmate')
+    users = [
+        ('dcjohnston1@gmail.com', 'Dan'),
+        ('emily.osteen.johnston@gmail.com', 'Emily'),
+    ]
+    lines = []
+    for email, name in users:
+        doc = db.collection('user_settings').document(email).get()
+        if not doc.exists:
+            continue
+        data = doc.to_dict()
+        roles = data.get('roles', [])
+        prefs = data.get('preferences', [])
+        if roles or prefs:
+            lines.append(f"{name} ({email}):")
+            if roles:
+                lines.append(f"  Roles: {'; '.join(roles)}")
+            if prefs:
+                lines.append(f"  Preferences: {'; '.join(prefs)}")
+    if lines:
+        return "HOUSEHOLD MEMBER CONTEXT:\n" + "\n".join(lines)
+    return ""
+
+
 def process_message(user, message, history=None):
     doc_contents = read_doc()
     today = datetime.now(_tz())
     date_line = f"TODAY: {today.strftime('%A, %B %-d, %Y')}"
 
-    full_system = SYSTEM_PROMPT + f"\n\n{date_line}\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
+    user_context = _load_user_context()
+    full_system = SYSTEM_PROMPT + f"\n\n{date_line}"
+    if user_context:
+        full_system += f"\n\n{user_context}"
+    action_summary = get_action_summary()
+    if action_summary:
+        full_system += f"\n\nRECENT HOUSEHOLD ACTIVITY:\n{action_summary}"
+    full_system += f"\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
 
     # Convert history to Gemini format
     chat_history = []

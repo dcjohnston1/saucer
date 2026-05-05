@@ -1791,3 +1791,34 @@ body { overflow-y: auto; height: auto; }
   line-height: 1.45;
   font-style: italic;
 }
+
+/* ── My Profile (context) screen ─────────────────────────────────────────── */
+#add-role-row, #add-preference-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+#new-role-input, #new-preference-input {
+  flex: 1;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 16px;
+  font-family: inherit;
+  background: #fff;
+}
+
+#new-role-input:focus, #new-preference-input:focus { outline: none; border-color: #aaa; }
+
+#add-role-btn, #add-preference-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 10px;
+  background: #2b2b2b;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+#add-role-btn:hover, #add-preference-btn:hover { background: #444; }

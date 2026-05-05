@@ -3,12 +3,22 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud import firestore
 from mediator import process_message
+from logger import log_action, get_recent_actions, get_action_summary
 
 app = Flask(__name__)
 CORS(app)
 
 def get_db():
     return firestore.Client(project='mediationmate')
+
+
+def _req_user(data=None):
+    """Extract the acting user's email from request body or query param."""
+    if data:
+        v = data.get('user', '')
+        if v:
+            return v
+    return request.args.get('user', 'unknown')
 
 
 def _backfill(sender_filter=None, keyword_filter=None):
@@ -321,6 +331,8 @@ def accept_proposal(proposal_id):
                         print(f"Calendar event creation failed: {e}")
                 p['accepted'] = True
                 write_json('saucer-proposals.json', proposals)
+                user = _req_user(data)
+                log_action(user, 'proposal_accepted', {'proposal_id': proposal_id, 'title': p['title'], 'assignee': assignee})
                 return jsonify({'ok': True})
 
     return jsonify({'error': 'Proposal not found'}), 404
@@ -336,6 +348,8 @@ def dismiss_proposal(proposal_id):
             if p['id'] == proposal_id:
                 p['dismissed'] = True
                 write_json('saucer-proposals.json', proposals)
+                user = _req_user()
+                log_action(user, 'proposal_dismissed', {'proposal_id': proposal_id, 'title': p['title']})
                 return jsonify({'ok': True})
 
     return jsonify({'error': 'Proposal not found'}), 404
@@ -348,6 +362,8 @@ def dismiss_email(email_id):
     if email_id not in dismissed:
         dismissed.append(email_id)
         write_json('saucer-dismissed.json', dismissed)
+    user = _req_user()
+    log_action(user, 'email_dismissed', {'email_id': email_id})
     return jsonify({'ok': True})
 
 
@@ -359,6 +375,8 @@ def review_email(email_id):
         reviewed.remove(email_id)
     reviewed.insert(0, email_id)
     write_json('saucer-reviewed.json', reviewed)
+    user = _req_user()
+    log_action(user, 'email_reviewed', {'email_id': email_id})
     return jsonify({'ok': True})
 
 
@@ -380,6 +398,8 @@ def complete_task():
         return jsonify({'error': 'Missing title'}), 400
     from gdocs import complete_task as gdocs_complete_task
     gdocs_complete_task(title)
+    user = _req_user(data)
+    log_action(user, 'task_completed', {'title': title})
     return jsonify({'ok': True})
 
 
@@ -402,6 +422,8 @@ def add_email_filter():
         {'addresses': firestore.ArrayUnion([email])}, merge=True
     )
     _backfill(sender_filter=[email])
+    user = _req_user(data)
+    log_action(user, 'sender_filter_added', {'sender': email})
     return jsonify({'ok': True})
 
 
@@ -411,6 +433,8 @@ def remove_email_filter(email):
     db.collection('settings').document('email_filters').set(
         {'addresses': firestore.ArrayRemove([email])}, merge=True
     )
+    user = _req_user()
+    log_action(user, 'sender_filter_removed', {'sender': email})
     return jsonify({'ok': True})
 
 
@@ -446,6 +470,8 @@ def add_keyword_filter():
         {'keywords': firestore.ArrayUnion([keyword])}, merge=True
     )
     _backfill(keyword_filter=[keyword])
+    user = _req_user(data)
+    log_action(user, 'keyword_filter_added', {'keyword': keyword})
     return jsonify({'ok': True})
 
 
@@ -455,6 +481,8 @@ def remove_keyword_filter(keyword):
     db.collection('settings').document('keyword_filters').set(
         {'keywords': firestore.ArrayRemove([keyword])}, merge=True
     )
+    user = _req_user()
+    log_action(user, 'keyword_filter_removed', {'keyword': keyword})
     return jsonify({'ok': True})
 
 
@@ -511,6 +539,8 @@ def add_exclude_keyword_filter():
     db.collection('settings').document('exclude_keyword_filters').set(
         {'keywords': firestore.ArrayUnion([keyword])}, merge=True
     )
+    user = _req_user(data)
+    log_action(user, 'exclude_keyword_filter_added', {'keyword': keyword})
     return jsonify({'ok': True})
 
 
@@ -520,6 +550,8 @@ def remove_exclude_keyword_filter(keyword):
     db.collection('settings').document('exclude_keyword_filters').set(
         {'keywords': firestore.ArrayRemove([keyword])}, merge=True
     )
+    user = _req_user()
+    log_action(user, 'exclude_keyword_filter_removed', {'keyword': keyword})
     return jsonify({'ok': True})
 
 
@@ -535,6 +567,8 @@ def create_calendar_event():
         return jsonify({'error': 'Missing title or date'}), 400
     try:
         event_id = create_event_direct(title, date_str, time_str, notes=notes)
+        user = _req_user(data)
+        log_action(user, 'calendar_event_added', {'title': title, 'date': date_str})
         return jsonify({'ok': True, 'id': event_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -553,6 +587,8 @@ def update_calendar_event(event_id):
             time_str=data.get('time') or None,
             notes=data.get('notes'),
         )
+        user = _req_user(data)
+        log_action(user, 'calendar_event_edited', {'event_id': event_id, 'title': data.get('title')})
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -563,9 +599,55 @@ def delete_calendar_event(event_id):
     from gcalendar import delete_event
     try:
         delete_event(event_id)
+        user = _req_user()
+        log_action(user, 'calendar_event_deleted', {'event_id': event_id})
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/user-settings/<user_id>', methods=['GET'])
+def get_user_settings(user_id):
+    db = get_db()
+    doc = db.collection('user_settings').document(user_id).get()
+    if doc.exists:
+        data = doc.to_dict()
+        return jsonify({
+            'roles': data.get('roles', []),
+            'preferences': data.get('preferences', []),
+        })
+    return jsonify({'roles': [], 'preferences': []})
+
+
+@app.route('/user-settings/<user_id>', methods=['PUT'])
+def save_user_settings(user_id):
+    data = request.get_json()
+    roles = data.get('roles', [])
+    prefs = data.get('preferences', [])
+    db = get_db()
+    db.collection('user_settings').document(user_id).set({
+        'roles': roles,
+        'preferences': prefs,
+    })
+    log_action(user_id, 'profile_updated', {'roles': roles, 'preferences': prefs})
+    return jsonify({'ok': True})
+
+
+@app.route('/actions/recent', methods=['GET'])
+def get_actions_recent():
+    user = request.args.get('user') or None
+    action_type = request.args.get('action_type') or None
+    limit = min(int(request.args.get('limit', 20)), 100)
+    since = request.args.get('since') or None
+    actions = get_recent_actions(user=user, action_type=action_type, limit=limit, since=since)
+    return jsonify({'actions': actions})
+
+
+@app.route('/actions/summary', methods=['GET'])
+def get_actions_summary():
+    days = int(request.args.get('days', 7))
+    summary = get_action_summary(days=days)
+    return jsonify({'summary': summary})
 
 
 @app.route('/health', methods=['GET'])

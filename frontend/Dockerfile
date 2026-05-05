@@ -3,5 +3,6 @@ COPY index.html /usr/share/nginx/html/
 COPY app.js /usr/share/nginx/html/
 COPY style.css /usr/share/nginx/html/
 COPY saucer_logo.png /usr/share/nginx/html/
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 8080
-CMD sed -i 's/listen\s*80;/listen 8080;/g' /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
+CMD ["nginx", "-g", "daemon off;"]

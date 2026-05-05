@@ -6,6 +6,11 @@ let currentUser = null;
 let conversationHistory = [];
 let sessionPrevSeenAt = 0;
 
+function getUserEmail() {
+  if (currentUser?.email) return currentUser.email;
+  try { return JSON.parse(localStorage.getItem('saucer_user') || '{}').email || ''; } catch { return ''; }
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 function initGoogleAuth() {
@@ -167,6 +172,21 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('usage-back-btn').addEventListener('click', closeUsageScreen);
 
+  // My Profile (context) screen
+  document.getElementById('menu-context').addEventListener('click', () => {
+    closeDrawer();
+    openContextScreen();
+  });
+  document.getElementById('context-back-btn').addEventListener('click', closeContextScreen);
+  document.getElementById('add-role-btn').addEventListener('click', addRole);
+  document.getElementById('new-role-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addRole();
+  });
+  document.getElementById('add-preference-btn').addEventListener('click', addPref);
+  document.getElementById('new-preference-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addPref();
+  });
+
   // List screen
   document.getElementById('menu-list').addEventListener('click', () => {
     closeDrawer();
@@ -291,6 +311,88 @@ function closeUsageScreen() {
   document.getElementById('usage-screen').classList.add('hidden');
 }
 
+// ── My Profile (roles & preferences) ─────────────────────────────────────────
+
+let _ctxRoles = [];
+let _ctxPrefs = [];
+
+async function openContextScreen() {
+  document.getElementById('context-screen').classList.remove('hidden');
+  const rolesEl = document.getElementById('roles-list');
+  const prefsEl = document.getElementById('preferences-list');
+  rolesEl.innerHTML = '<p class="empty-state" style="font-size:0.85rem">Loading…</p>';
+  prefsEl.innerHTML = '';
+  try {
+    const data = await fetch(`${BACKEND_URL}/user-settings/${encodeURIComponent(currentUser.email)}`).then(r => r.json());
+    _ctxRoles = data.roles || [];
+    _ctxPrefs = data.preferences || [];
+    _renderContextItems('roles-list', _ctxRoles, removeRole);
+    _renderContextItems('preferences-list', _ctxPrefs, removePref);
+  } catch {
+    rolesEl.innerHTML = '<p class="empty-state" style="font-size:0.85rem">Could not load.</p>';
+  }
+}
+
+function closeContextScreen() {
+  document.getElementById('context-screen').classList.add('hidden');
+}
+
+function _renderContextItems(containerId, items, removeFn) {
+  const list = document.getElementById(containerId);
+  list.innerHTML = '';
+  if (items.length === 0) {
+    list.innerHTML = '<p class="empty-state" style="padding:4px 0 8px;font-size:0.85rem">None added yet.</p>';
+    return;
+  }
+  items.forEach((text, idx) => {
+    const row = document.createElement('div');
+    row.className = 'sender-row';
+    row.innerHTML = `<span>${text}</span><button class="remove-sender-btn">Remove</button>`;
+    row.querySelector('.remove-sender-btn').addEventListener('click', () => removeFn(idx));
+    list.appendChild(row);
+  });
+}
+
+async function _saveContext() {
+  await fetch(`${BACKEND_URL}/user-settings/${encodeURIComponent(currentUser.email)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roles: _ctxRoles, preferences: _ctxPrefs }),
+  });
+}
+
+async function addRole() {
+  const input = document.getElementById('new-role-input');
+  const val = input.value.trim();
+  if (!val) return;
+  _ctxRoles.push(val);
+  input.value = '';
+  await _saveContext();
+  _renderContextItems('roles-list', _ctxRoles, removeRole);
+}
+
+async function removeRole(idx) {
+  _ctxRoles.splice(idx, 1);
+  await _saveContext();
+  _renderContextItems('roles-list', _ctxRoles, removeRole);
+}
+
+async function addPref() {
+  const input = document.getElementById('new-preference-input');
+  const val = input.value.trim();
+  if (!val) return;
+  _ctxPrefs.push(val);
+  input.value = '';
+  await _saveContext();
+  _renderContextItems('preferences-list', _ctxPrefs, removePref);
+}
+
+async function removePref(idx) {
+  _ctxPrefs.splice(idx, 1);
+  await _saveContext();
+  _renderContextItems('preferences-list', _ctxPrefs, removePref);
+}
+
 // ── Email Filters ─────────────────────────────────────────────────────────────
 
 async function loadEmailFilters() {
@@ -331,7 +433,7 @@ async function addSender() {
     await fetch(`${BACKEND_URL}/email-filters`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
+      body: JSON.stringify({ email, user: getUserEmail() })
     });
     input.value = '';
     loadEmailFilters();
@@ -342,7 +444,8 @@ async function addSender() {
 
 async function removeSender(email) {
   try {
-    await fetch(`${BACKEND_URL}/email-filters/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/email-filters/${encodeURIComponent(email)}${userParam}`, { method: 'DELETE' });
     loadEmailFilters();
   } catch (err) {
     alert(`Failed to remove sender: ${err.message}`);
@@ -386,7 +489,7 @@ async function addKeyword() {
     await fetch(`${BACKEND_URL}/keyword-filters`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keyword })
+      body: JSON.stringify({ keyword, user: getUserEmail() })
     });
     input.value = '';
     loadKeywordFilters();
@@ -397,7 +500,8 @@ async function addKeyword() {
 
 async function removeKeyword(keyword) {
   try {
-    await fetch(`${BACKEND_URL}/keyword-filters/${encodeURIComponent(keyword)}`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/keyword-filters/${encodeURIComponent(keyword)}${userParam}`, { method: 'DELETE' });
     loadKeywordFilters();
   } catch (err) {
     alert(`Failed to remove keyword: ${err.message}`);
@@ -707,7 +811,7 @@ async function assignInlineProposal(proposalId, assigneeEmail, emailId, row, car
     await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignee: assigneeEmail })
+      body: JSON.stringify({ assignee: assigneeEmail, user: getUserEmail() })
     });
   } catch (err) {
     console.error('Failed to assign proposal:', err);
@@ -722,7 +826,8 @@ async function skipInlineProposal(proposalId, emailId, row, card) {
   row.classList.add('proposal-row--handled');
   checkAllProposalsHandled(emailId, card);
   try {
-    await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}${userParam}`, { method: 'DELETE' });
   } catch (err) {
     console.error('Failed to skip proposal:', err);
   }
@@ -738,7 +843,8 @@ function checkAllProposalsHandled(emailId, card) {
 
 async function reviewEmail(emailId, wrapper) {
   try {
-    await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}/review`, { method: 'POST' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}/review${userParam}`, { method: 'POST' });
   } catch (err) {
     console.error('Failed to review email:', err);
   }
@@ -1095,7 +1201,7 @@ async function completeTask(title) {
     await fetch(`${BACKEND_URL}/doc/task`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title })
+      body: JSON.stringify({ title, user: getUserEmail() })
     });
   } catch (err) {
     console.error('Failed to complete task:', err);
@@ -1141,7 +1247,8 @@ function addSwipeToDismiss(wrapper, card, emailId) {
 
 async function dismissEmail(emailId) {
   try {
-    await fetch(`${BACKEND_URL}/emails/${emailId}/dismiss`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/emails/${emailId}/dismiss${userParam}`, { method: 'DELETE' });
   } catch (err) {
     console.error('Failed to dismiss email:', err);
   }
@@ -1207,7 +1314,7 @@ async function acceptProposalWithAssignee(proposalId, assigneeEmail) {
     await fetch(`${BACKEND_URL}/proposals/${proposalId}/accept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignee: assigneeEmail })
+      body: JSON.stringify({ assignee: assigneeEmail, user: getUserEmail() })
     });
     loadProposals();
   } catch (err) {
@@ -1218,7 +1325,8 @@ async function acceptProposalWithAssignee(proposalId, assigneeEmail) {
 async function dismissProposal(proposalId, wrapperEl) {
   wrapperEl.remove();
   try {
-    await fetch(`${BACKEND_URL}/proposals/${proposalId}`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/proposals/${proposalId}${userParam}`, { method: 'DELETE' });
     loadProposals();
   } catch (err) {
     console.error('Failed to dismiss proposal:', err);
@@ -1543,7 +1651,7 @@ async function addExcludeKeyword() {
     await fetch(`${BACKEND_URL}/exclude-keyword-filters`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keyword })
+      body: JSON.stringify({ keyword, user: getUserEmail() })
     });
     input.value = '';
     loadExcludeKeywordFilters();
@@ -1555,7 +1663,8 @@ async function addExcludeKeyword() {
 
 async function removeExcludeKeyword(keyword) {
   try {
-    await fetch(`${BACKEND_URL}/exclude-keyword-filters/${encodeURIComponent(keyword)}`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/exclude-keyword-filters/${encodeURIComponent(keyword)}${userParam}`, { method: 'DELETE' });
     loadExcludeKeywordFilters();
     loadEmailFilters();
   } catch (err) {
@@ -1649,7 +1758,7 @@ async function saveNewCalendarEvent() {
     const res = await fetch(`${BACKEND_URL}/calendar/events`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, date, time, notes })
+      body: JSON.stringify({ title, date, time, notes, user: getUserEmail() })
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Failed');
@@ -1704,7 +1813,7 @@ async function saveCalendarEventEdit() {
     const res = await fetch(`${BACKEND_URL}/calendar/events/${_editingCalEvent.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, start_date, time, notes })
+      body: JSON.stringify({ title, start_date, time, notes, user: getUserEmail() })
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Failed');
@@ -1728,7 +1837,8 @@ async function deleteCalendarEventConfirm() {
   const btn = document.getElementById('cal-edit-delete-btn');
   btn.disabled = true;
   try {
-    const res = await fetch(`${BACKEND_URL}/calendar/events/${_editingCalEvent.id}`, { method: 'DELETE' });
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    const res = await fetch(`${BACKEND_URL}/calendar/events/${_editingCalEvent.id}${userParam}`, { method: 'DELETE' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Failed');
     closeCalendarEventEditDrawer();
@@ -1829,7 +1939,7 @@ async function _doAddTaskToCalendar(title, dateStr, card, wrapper) {
     const res = await fetch(`${BACKEND_URL}/calendar/events`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, date: dateStr })
+      body: JSON.stringify({ title, date: dateStr, user: getUserEmail() })
     });
     const data = await res.json();
     if (data.ok) {

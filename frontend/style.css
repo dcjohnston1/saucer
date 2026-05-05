@@ -1450,20 +1450,33 @@ body { overflow-y: auto; height: auto; }
 .cal-assignee--d { background: #2b2b2b; }
 .cal-assignee--e { background: #4a90d9; }
 
-/* ── Calendar "+" add button ─────────────────────────────────────────────── */
-.cal-add-btn {
-  background: none;
+/* ── Calendar "+" floating action button ─────────────────────────────────── */
+.cal-fab {
+  position: absolute;
+  bottom: 24px;
+  right: 20px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #4a90d9;
+  color: #fff;
   border: none;
-  font-size: 1.5rem;
-  color: #4a90d9;
-  cursor: pointer;
-  padding: 0 4px;
-  line-height: 1;
+  font-size: 1.8rem;
   font-weight: 300;
-  margin-left: auto;
-  flex-shrink: 0;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 12px rgba(74, 144, 217, 0.5);
+  transition: background 0.15s, transform 0.15s;
+  z-index: 10;
 }
-.cal-add-btn:hover { color: #2b2b2b; }
+.cal-fab:hover { background: #3a7fc5; transform: scale(1.06); }
+.cal-fab:active { transform: scale(0.95); }
+
+/* Calendar screen needs position:relative for the FAB */
+#calendar-screen { position: fixed; }
 
 /* ── Calendar events are tappable ────────────────────────────────────────── */
 .calendar-event {
@@ -1668,6 +1681,15 @@ body { overflow-y: auto; height: auto; }
   to { transform: rotate(360deg); }
 }
 
+/* ── Email refresh banner ────────────────────────────────────────────────── */
+.email-refresh-banner {
+  font-size: 0.78rem;
+  color: #999;
+  text-align: center;
+  padding: 6px 0 2px;
+  font-style: italic;
+}
+
 /* ── Toast notification ──────────────────────────────────────────────────── */
 .toast {
   position: fixed;
@@ -1757,10 +1779,7 @@ body { overflow-y: auto; height: auto; }
   color: #e05c5c;
 }
 
-/* ── Screen header with right button ─────────────────────────────────────── */
-.screen-header {
-  justify-content: flex-start;
-}
+/* ── Screen header: title flex-grows to fill space ───────────────────────── */
 .screen-header .screen-title {
   flex: 1;
 }

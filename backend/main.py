@@ -153,12 +153,14 @@ def get_emails():
     # Apply exclude keywords
     excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
     exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+    print(f"[/emails] exclude_keywords: {exclude_keywords}")
 
     dismissed = set(read_json('saucer-dismissed.json', []))
     reviewed = set(read_json('saucer-reviewed.json', []))
     visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
 
     if exclude_keywords:
+        before_count = len(visible)
         def _matches_exclude(e):
             haystack = ' '.join([
                 e.get('subject', ''),
@@ -167,6 +169,7 @@ def get_emails():
             ]).lower()
             return any(kw in haystack for kw in exclude_keywords)
         visible = [e for e in visible if not _matches_exclude(e)]
+        print(f"[/emails] exclude filter: {before_count} -> {len(visible)} emails")
 
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))

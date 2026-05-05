@@ -776,23 +776,33 @@ async function resyncEmails() {
   }
 }
 
-async function loadEmails(filters) {
+async function loadEmails(filters, preserveExisting = false) {
   const emailsContent = document.getElementById('emails-content');
   if (!filters || filters.length === 0) {
     emailsContent.innerHTML = '<div class="empty-state">Add a sender via the menu to see their emails here.</div>';
     return;
   }
-  emailsContent.innerHTML = '<div class="loading">Fetching emails...</div>';
+
+  let refreshBanner = null;
+  if (preserveExisting) {
+    refreshBanner = document.createElement('div');
+    refreshBanner.className = 'email-refresh-banner';
+    refreshBanner.textContent = 'Refreshing…';
+    emailsContent.insertBefore(refreshBanner, emailsContent.firstChild);
+  } else {
+    emailsContent.innerHTML = '<div class="loading">Fetching emails...</div>';
+  }
+
   try {
     const res = await fetch(`${BACKEND_URL}/emails`);
     if (!res.ok) throw new Error('Failed to fetch emails');
     const data = await res.json();
 
+    emailsContent.innerHTML = '';
     if (!data.emails || data.emails.length === 0) {
       emailsContent.innerHTML = '<div class="empty-state">No recent emails found.</div>';
       return;
     }
-    emailsContent.innerHTML = '';
     const emails = data.emails;
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
     emails.forEach(email => {
@@ -801,7 +811,11 @@ async function loadEmails(filters) {
     });
     wireSearchInput(emailsContent);
   } catch (err) {
-    emailsContent.textContent = `Error: ${err.message}`;
+    if (refreshBanner) {
+      refreshBanner.remove();
+    } else {
+      emailsContent.textContent = `Error: ${err.message}`;
+    }
   }
 }
 
@@ -1046,9 +1060,7 @@ function addSwipeToComplete(wrapper, card, title, task) {
       card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
       completeTask(title);
     } else if (deltaX > 80 && task) {
-      card.style.transition = 'transform 0.25s ease';
-      card.style.transform = 'translateX(0)';
-      addTaskToCalendar(task);
+      addTaskToCalendar(task, card, wrapper);
     } else {
       card.style.transition = 'transform 0.25s ease';
       card.style.transform = 'translateX(0)';
@@ -1521,6 +1533,7 @@ async function addExcludeKeyword() {
     });
     input.value = '';
     loadExcludeKeywordFilters();
+    loadEmailFilters();
   } catch (err) {
     alert(`Failed to add exclude keyword: ${err.message}`);
   }
@@ -1530,6 +1543,7 @@ async function removeExcludeKeyword(keyword) {
   try {
     await fetch(`${BACKEND_URL}/exclude-keyword-filters/${encodeURIComponent(keyword)}`, { method: 'DELETE' });
     loadExcludeKeywordFilters();
+    loadEmailFilters();
   } catch (err) {
     alert(`Failed to remove exclude keyword: ${err.message}`);
   }
@@ -1566,7 +1580,10 @@ function initPullToRefresh() {
     pulling = false;
     if (!triggered) return;
     try {
-      await loadEmailFilters();
+      const res = await fetch(`${BACKEND_URL}/email-filters`);
+      const data = await res.json();
+      renderSenders(data.filters || []);
+      await loadEmails(data.filters || [], true);
     } finally {
       indicator.classList.add('hidden');
       triggered = false;
@@ -1781,17 +1798,19 @@ function closeTaskDetailDrawer() {
 // ── Right-swipe task → Add to Calendar ───────────────────────────────────────
 
 let _pendingCalendarTask = null;
+let _pendingCalendarCard = null;
+let _pendingCalendarWrapper = null;
 
-function addTaskToCalendar(task) {
+function addTaskToCalendar(task, card, wrapper) {
   const due = task.due && task.due !== 'none' ? task.due : null;
   if (due) {
-    _doAddTaskToCalendar(task.title, due);
+    _doAddTaskToCalendar(task.title, due, card, wrapper);
   } else {
-    openDatePickerModal(task);
+    openDatePickerModal(task, card, wrapper);
   }
 }
 
-async function _doAddTaskToCalendar(title, dateStr) {
+async function _doAddTaskToCalendar(title, dateStr, card, wrapper) {
   try {
     const res = await fetch(`${BACKEND_URL}/calendar/events`, {
       method: 'POST',
@@ -1801,16 +1820,26 @@ async function _doAddTaskToCalendar(title, dateStr) {
     const data = await res.json();
     if (data.ok) {
       showToast('Added to calendar ✓');
+      if (card && wrapper) {
+        card.style.transition = 'transform 0.35s ease, opacity 0.35s ease';
+        card.style.transform = 'translateX(100%)';
+        card.style.opacity = '0';
+        card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+      }
     } else {
       showToast(`Error: ${data.error || 'Failed'}`);
+      if (card) { card.style.transition = 'transform 0.25s ease'; card.style.transform = 'translateX(0)'; }
     }
   } catch (err) {
     showToast(`Error: ${err.message}`);
+    if (card) { card.style.transition = 'transform 0.25s ease'; card.style.transform = 'translateX(0)'; }
   }
 }
 
-function openDatePickerModal(task) {
+function openDatePickerModal(task, card, wrapper) {
   _pendingCalendarTask = task;
+  _pendingCalendarCard = card || null;
+  _pendingCalendarWrapper = wrapper || null;
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById('date-picker-task-title').textContent = task.title;
   document.getElementById('date-picker-input').value = today;
@@ -1821,9 +1850,11 @@ function openDatePickerModal(task) {
   confirmBtn.onclick = async () => {
     const date = document.getElementById('date-picker-input').value;
     if (!date) return;
+    const t = _pendingCalendarTask;
+    const c = _pendingCalendarCard;
+    const w = _pendingCalendarWrapper;
     closeDatePickerModal();
-    await _doAddTaskToCalendar(_pendingCalendarTask.title, date);
-    _pendingCalendarTask = null;
+    await _doAddTaskToCalendar(t.title, date, c, w);
   };
 }
 
@@ -1831,4 +1862,6 @@ function closeDatePickerModal() {
   document.getElementById('date-picker-overlay').classList.add('hidden');
   document.getElementById('date-picker-modal').classList.add('hidden');
   _pendingCalendarTask = null;
+  _pendingCalendarCard = null;
+  _pendingCalendarWrapper = null;
 }

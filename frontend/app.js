@@ -475,6 +475,7 @@ function buildEmailCard(email, isNew = false) {
 
   const wrapper = document.createElement('div');
   wrapper.className = 'email-card-wrapper';
+  wrapper.dataset.emailId = email.id;
   wrapper.innerHTML = '<div class="swipe-dismiss-bg">Dismiss ✕</div>';
 
   const card = document.createElement('div');
@@ -784,7 +785,12 @@ async function loadEmails(filters, preserveExisting = false) {
   }
 
   let refreshBanner = null;
+  let currentIds = null;
   if (preserveExisting) {
+    currentIds = new Set(
+      [...emailsContent.querySelectorAll('.email-card-wrapper[data-email-id]')]
+        .map(el => el.dataset.emailId)
+    );
     refreshBanner = document.createElement('div');
     refreshBanner.className = 'email-refresh-banner';
     refreshBanner.textContent = 'Refreshing…';
@@ -798,12 +804,20 @@ async function loadEmails(filters, preserveExisting = false) {
     if (!res.ok) throw new Error('Failed to fetch emails');
     const data = await res.json();
 
+    const emails = data.emails || [];
+
+    if (preserveExisting && currentIds && emails.length === currentIds.size &&
+        emails.every(e => currentIds.has(e.id))) {
+      refreshBanner.remove();
+      showToast("You're all caught up");
+      return;
+    }
+
     emailsContent.innerHTML = '';
-    if (!data.emails || data.emails.length === 0) {
+    if (emails.length === 0) {
       emailsContent.innerHTML = '<div class="empty-state">No recent emails found.</div>';
       return;
     }
-    const emails = data.emails;
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
     emails.forEach(email => {
       const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;

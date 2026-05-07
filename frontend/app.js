@@ -439,11 +439,16 @@ async function removePref(idx) {
 
 async function loadEmailFilters() {
   try {
-    const res = await fetch(`${BACKEND_URL}/email-filters`);
-    const data = await res.json();
-    renderSenders(data.filters || []);
-    await loadCachedEmails(data.filters || []);
-    backgroundSync(data.filters || []);
+    const [filtersRes, blockedRes] = await Promise.all([
+      fetch(`${BACKEND_URL}/email-filters`),
+      fetch(`${BACKEND_URL}/blocked-senders`)
+    ]);
+    const filtersData = await filtersRes.json();
+    const blockedData = await blockedRes.json();
+    renderSenders(filtersData.filters || []);
+    renderBlockedSenders(blockedData.addresses || []);
+    await loadCachedEmails(filtersData.filters || []);
+    backgroundSync(filtersData.filters || []);
   } catch (err) {
     document.getElementById('emails-content').textContent = `Error loading filters: ${err.message}`;
   }
@@ -545,6 +550,35 @@ async function removeSender(email) {
     loadEmailFilters();
   } catch (err) {
     alert(`Failed to remove sender: ${err.message}`);
+  }
+}
+
+function renderBlockedSenders(addresses) {
+  const list = document.getElementById('blocked-senders-list');
+  list.innerHTML = '';
+  if (addresses.length === 0) {
+    list.innerHTML = '<p class="empty-state" style="padding: 4px 0 8px; font-size: 0.85rem;">No blocked senders.</p>';
+    return;
+  }
+  addresses.forEach(email => {
+    const row = document.createElement('div');
+    row.className = 'sender-row blocked-sender-row';
+    row.innerHTML = `
+      <span>${email}</span>
+      <button class="remove-sender-btn" data-email="${email}">Remove</button>
+    `;
+    row.querySelector('.remove-sender-btn').addEventListener('click', () => removeBlockedSender(email));
+    list.appendChild(row);
+  });
+}
+
+async function removeBlockedSender(email) {
+  try {
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/blocked-senders/${encodeURIComponent(email)}${userParam}`, { method: 'DELETE' });
+    loadEmailFilters();
+  } catch (err) {
+    alert(`Failed to remove blocked sender: ${err.message}`);
   }
 }
 
@@ -1419,6 +1453,9 @@ async function blockSender(senderEmail) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: senderEmail, user: getUserEmail() })
     });
+    const blockedRes = await fetch(`${BACKEND_URL}/blocked-senders`);
+    const blockedData = await blockedRes.json();
+    renderBlockedSenders(blockedData.addresses || []);
   } catch (err) {
     console.error('Failed to block sender:', err);
   }

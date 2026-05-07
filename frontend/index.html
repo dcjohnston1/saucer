@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=25.6" />
+  <link rel="stylesheet" href="style.css?v=25.7" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
@@ -56,11 +56,16 @@
       </div>
       <div class="screen-body">
         <button id="resync-btn" class="resync-btn">Sync history (last 90 days)</button>
+        <div class="filter-section-header">Permitted Senders</div>
         <div id="senders-list"></div>
         <div id="add-sender-row">
           <input id="new-sender-input" type="email" placeholder="Add email address..." />
           <button id="add-sender-btn">Add</button>
         </div>
+
+        <div class="filter-section-divider filter-section-divider--blocked">Blocked Senders</div>
+        <p class="filter-section-hint">Emails from these senders are hidden and never trigger the agent.</p>
+        <div id="blocked-senders-list"></div>
 
         <div class="filter-section-divider">Include Keywords</div>
         <div id="keywords-list"></div>
@@ -298,6 +303,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=21.6"></script>
+  <script src="app.js?v=21.7"></script>
 </body>
 </html>

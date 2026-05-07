@@ -1796,6 +1796,24 @@ body { overflow-y: auto; height: auto; }
 .filter-section-divider--exclude {
   color: #e05c5c;
 }
+.filter-section-divider--blocked {
+  color: #c0392b;
+}
+
+.filter-section-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 10px;
+  padding-left: 4px;
+}
+
+.blocked-sender-row {
+  border-left: 3px solid #e74c3c;
+  background: #fff8f8;
+}
 
 /* ── Screen header: title flex-grows to fill space ───────────────────────── */
 .screen-header .screen-title {

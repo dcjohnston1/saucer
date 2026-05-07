@@ -1,9 +1,11 @@
 import os
+import uuid
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud import firestore
 from mediator import process_message
-from logger import log_action, get_recent_actions, get_action_summary
+from logger import log_action, get_recent_actions, get_action_summary, get_recent_decisions
+from prompts import ONBOARDING_SYSTEM_PROMPT
 
 app = Flask(__name__)
 CORS(app)
@@ -19,6 +21,18 @@ def _req_user(data=None):
         if v:
             return v
     return request.args.get('user', 'unknown')
+
+
+def _is_vague_summary(summary):
+    """Return True if the summary is missing or too short/generic to be useful."""
+    if not summary:
+        return True
+    if len(summary) < 60:
+        return True
+    lower = summary.lower().strip()
+    if lower.startswith('email from') or lower.startswith('message from'):
+        return True
+    return False
 
 
 def _backfill(sender_filter=None, keyword_filter=None):
@@ -46,13 +60,15 @@ def _backfill(sender_filter=None, keyword_filter=None):
 def chat():
     data = request.get_json()
     user = data.get('user')
+    user_email = data.get('user_email') or user
     message = data.get('message')
+    conversation_id = data.get('conversation_id') or str(uuid.uuid4())
 
     if not user or not message:
         return jsonify({'error': 'Missing user or message'}), 400
 
     history = data.get('history', [])
-    reply = process_message(user, message, history)
+    reply = process_message(user, message, history, user_email=user_email, conversation_id=conversation_id)
     return jsonify({
         'reply': reply,
         'model': 'gemini-2.5-flash'
@@ -134,8 +150,10 @@ def get_emails():
     kw_doc = db.collection('settings').document('keyword_filters').get()
     keywords = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
 
+    # Always include self-sent emails (from:me = from the authenticated account)
+    effective_filters = (filters + ['me']) if filters else None
     new_emails = scan_emails(
-        sender_filter=filters if filters else None,
+        sender_filter=effective_filters,
         keyword_filter=keywords if keywords else None,
         after_timestamp=after_ts
     )
@@ -149,8 +167,8 @@ def get_emails():
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
     write_json('saucer-config.json', config)
 
-    # Generate summaries for emails that don't have one yet (cap at 5 per request)
-    to_summarize = [e for e in merged if not e.get('summary')][:5]
+    # Generate summaries for emails that lack one or have a vague/short one (cap at 5 per request)
+    to_summarize = [e for e in merged if _is_vague_summary(e.get('summary'))][:5]
     if to_summarize:
         from email_scanner import summarize_emails
         summaries = summarize_emails(to_summarize)
@@ -180,6 +198,11 @@ def get_emails():
             return any(kw in haystack for kw in exclude_keywords)
         visible = [e for e in visible if not _matches_exclude(e)]
         print(f"[/emails] exclude filter: {before_count} -> {len(visible)} emails")
+
+    blocked_doc = db.collection('settings').document('blocked_senders').get()
+    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+    if blocked_senders:
+        visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
 
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))
@@ -218,6 +241,44 @@ def get_emails():
     return jsonify({'emails': visible})
 
 
+@app.route('/emails/cached', methods=['GET'])
+def get_cached_emails():
+    """Return stored emails from GCS without triggering a Gmail scan."""
+    from gcs import read_json
+
+    stored = read_json('saucer-emails.json', [])
+    dismissed = set(read_json('saucer-dismissed.json', []))
+    reviewed = set(read_json('saucer-reviewed.json', []))
+    visible = [e for e in stored if e['id'] not in dismissed and e['id'] not in reviewed]
+
+    db = get_db()
+
+    excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
+    exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+    if exclude_keywords:
+        def _matches_exclude_cached(e):
+            haystack = ' '.join([
+                e.get('subject', ''),
+                e.get('sender', ''),
+                (e.get('body', '') or e.get('snippet', ''))[:500],
+            ]).lower()
+            return any(kw in haystack for kw in exclude_keywords)
+        visible = [e for e in visible if not _matches_exclude_cached(e)]
+
+    blocked_doc = db.collection('settings').document('blocked_senders').get()
+    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+    if blocked_senders:
+        visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
+
+    proposals = read_json('saucer-proposals.json', {})
+    for e in visible:
+        all_props = proposals.get(e['id'])
+        if all_props is not None:
+            e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
+
+    return jsonify({'emails': visible})
+
+
 @app.route('/emails/resync', methods=['POST'])
 def resync_emails():
     """Force a 90-day re-scan regardless of last_sync_timestamp."""
@@ -233,8 +294,9 @@ def resync_emails():
     keywords = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
 
     after_ts = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
+    effective_filters = (filters + ['me']) if filters else None
     new_emails = scan_emails(
-        sender_filter=filters if filters else None,
+        sender_filter=effective_filters,
         keyword_filter=keywords if keywords else None,
         after_timestamp=after_ts
     )
@@ -251,6 +313,24 @@ def resync_emails():
     dismissed = set(read_json('saucer-dismissed.json', []))
     reviewed = set(read_json('saucer-reviewed.json', []))
     visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
+
+    excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
+    exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+    if exclude_keywords:
+        def _matches_exclude_resync(e):
+            haystack = ' '.join([
+                e.get('subject', ''),
+                e.get('sender', ''),
+                (e.get('body', '') or e.get('snippet', ''))[:500],
+            ]).lower()
+            return any(kw in haystack for kw in exclude_keywords)
+        visible = [e for e in visible if not _matches_exclude_resync(e)]
+
+    blocked_doc = db.collection('settings').document('blocked_senders').get()
+    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+    if blocked_senders:
+        visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
+
     proposals_data = read_json('saucer-proposals.json', {})
     for e in visible:
         all_props = proposals_data.get(e['id'])
@@ -332,7 +412,7 @@ def accept_proposal(proposal_id):
                 p['accepted'] = True
                 write_json('saucer-proposals.json', proposals)
                 user = _req_user(data)
-                log_action(user, 'proposal_accepted', {'proposal_id': proposal_id, 'title': p['title'], 'assignee': assignee})
+                log_action(user, 'proposal_accepted', {'proposal_id': proposal_id, 'title': p['title'], 'assignee': assignee}, actor='user')
                 return jsonify({'ok': True})
 
     return jsonify({'error': 'Proposal not found'}), 404
@@ -349,7 +429,7 @@ def dismiss_proposal(proposal_id):
                 p['dismissed'] = True
                 write_json('saucer-proposals.json', proposals)
                 user = _req_user()
-                log_action(user, 'proposal_dismissed', {'proposal_id': proposal_id, 'title': p['title']})
+                log_action(user, 'proposal_dismissed', {'proposal_id': proposal_id, 'title': p['title']}, actor='user')
                 return jsonify({'ok': True})
 
     return jsonify({'error': 'Proposal not found'}), 404
@@ -363,7 +443,7 @@ def dismiss_email(email_id):
         dismissed.append(email_id)
         write_json('saucer-dismissed.json', dismissed)
     user = _req_user()
-    log_action(user, 'email_dismissed', {'email_id': email_id})
+    log_action(user, 'email_dismissed', {'email_id': email_id}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -376,7 +456,7 @@ def review_email(email_id):
     reviewed.insert(0, email_id)
     write_json('saucer-reviewed.json', reviewed)
     user = _req_user()
-    log_action(user, 'email_reviewed', {'email_id': email_id})
+    log_action(user, 'email_reviewed', {'email_id': email_id}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -399,8 +479,15 @@ def complete_task():
     from gdocs import complete_task as gdocs_complete_task
     gdocs_complete_task(title)
     user = _req_user(data)
-    log_action(user, 'task_completed', {'title': title})
+    log_action(user, 'task_completed', {'title': title}, actor='user')
     return jsonify({'ok': True})
+
+
+@app.route('/doc/dedup', methods=['POST'])
+def dedup_tasks():
+    from gdocs import dedup_tasks as gdocs_dedup
+    removed = gdocs_dedup()
+    return jsonify({'removed': removed})
 
 
 @app.route('/email-filters', methods=['GET'])
@@ -423,7 +510,7 @@ def add_email_filter():
     )
     _backfill(sender_filter=[email])
     user = _req_user(data)
-    log_action(user, 'sender_filter_added', {'sender': email})
+    log_action(user, 'sender_filter_added', {'sender': email}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -434,7 +521,7 @@ def remove_email_filter(email):
         {'addresses': firestore.ArrayRemove([email])}, merge=True
     )
     user = _req_user()
-    log_action(user, 'sender_filter_removed', {'sender': email})
+    log_action(user, 'sender_filter_removed', {'sender': email}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -471,7 +558,7 @@ def add_keyword_filter():
     )
     _backfill(keyword_filter=[keyword])
     user = _req_user(data)
-    log_action(user, 'keyword_filter_added', {'keyword': keyword})
+    log_action(user, 'keyword_filter_added', {'keyword': keyword}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -482,7 +569,41 @@ def remove_keyword_filter(keyword):
         {'keywords': firestore.ArrayRemove([keyword])}, merge=True
     )
     user = _req_user()
-    log_action(user, 'keyword_filter_removed', {'keyword': keyword})
+    log_action(user, 'keyword_filter_removed', {'keyword': keyword}, actor='user')
+    return jsonify({'ok': True})
+
+
+@app.route('/blocked-senders', methods=['GET'])
+def get_blocked_senders():
+    db = get_db()
+    doc = db.collection('settings').document('blocked_senders').get()
+    addresses = doc.to_dict().get('addresses', []) if doc.exists else []
+    return jsonify({'addresses': addresses})
+
+
+@app.route('/blocked-senders', methods=['POST'])
+def add_blocked_sender():
+    data = request.get_json()
+    email = (data.get('email') or '').strip()
+    if not email:
+        return jsonify({'error': 'Missing email'}), 400
+    db = get_db()
+    db.collection('settings').document('blocked_senders').set(
+        {'addresses': firestore.ArrayUnion([email])}, merge=True
+    )
+    user = _req_user(data)
+    log_action(user, 'sender_blocked', {'sender': email}, actor='user')
+    return jsonify({'ok': True})
+
+
+@app.route('/blocked-senders/<path:email>', methods=['DELETE'])
+def remove_blocked_sender(email):
+    db = get_db()
+    db.collection('settings').document('blocked_senders').set(
+        {'addresses': firestore.ArrayRemove([email])}, merge=True
+    )
+    user = _req_user()
+    log_action(user, 'sender_unblocked', {'sender': email}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -540,7 +661,7 @@ def add_exclude_keyword_filter():
         {'keywords': firestore.ArrayUnion([keyword])}, merge=True
     )
     user = _req_user(data)
-    log_action(user, 'exclude_keyword_filter_added', {'keyword': keyword})
+    log_action(user, 'exclude_keyword_filter_added', {'keyword': keyword}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -551,7 +672,7 @@ def remove_exclude_keyword_filter(keyword):
         {'keywords': firestore.ArrayRemove([keyword])}, merge=True
     )
     user = _req_user()
-    log_action(user, 'exclude_keyword_filter_removed', {'keyword': keyword})
+    log_action(user, 'exclude_keyword_filter_removed', {'keyword': keyword}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -568,7 +689,7 @@ def create_calendar_event():
     try:
         event_id = create_event_direct(title, date_str, time_str, notes=notes)
         user = _req_user(data)
-        log_action(user, 'calendar_event_added', {'title': title, 'date': date_str})
+        log_action(user, 'calendar_event_added', {'title': title, 'date': date_str}, actor='user')
         return jsonify({'ok': True, 'id': event_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -588,7 +709,7 @@ def update_calendar_event(event_id):
             notes=data.get('notes'),
         )
         user = _req_user(data)
-        log_action(user, 'calendar_event_edited', {'event_id': event_id, 'title': data.get('title')})
+        log_action(user, 'calendar_event_edited', {'event_id': event_id, 'title': data.get('title')}, actor='user')
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -600,7 +721,7 @@ def delete_calendar_event(event_id):
     try:
         delete_event(event_id)
         user = _req_user()
-        log_action(user, 'calendar_event_deleted', {'event_id': event_id})
+        log_action(user, 'calendar_event_deleted', {'event_id': event_id}, actor='user')
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -629,7 +750,7 @@ def save_user_settings(user_id):
         'roles': roles,
         'preferences': prefs,
     })
-    log_action(user_id, 'profile_updated', {'roles': roles, 'preferences': prefs})
+    log_action(user_id, 'profile_updated', {'roles': roles, 'preferences': prefs}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -648,6 +769,166 @@ def get_actions_summary():
     days = int(request.args.get('days', 7))
     summary = get_action_summary(days=days)
     return jsonify({'summary': summary})
+
+
+@app.route('/decisions/recent', methods=['GET'])
+def get_decisions_recent():
+    user_email = request.args.get('user_email') or None
+    action_type = request.args.get('action_type') or None
+    limit = min(int(request.args.get('limit', 20)), 100)
+    since = request.args.get('since') or None
+    decisions = get_recent_decisions(user_email=user_email, action_type=action_type, limit=limit, since=since)
+    return jsonify({'decisions': decisions})
+
+
+@app.route('/onboarding', methods=['POST'])
+def onboarding():
+    import google.generativeai as genai
+    from datetime import datetime, timezone
+    data = request.get_json()
+    user_email = data.get('user_email', '')
+    message = data.get('message', '')
+    history = data.get('history', [])
+
+    db = get_db()
+    saved_profile = {}
+
+    def save_household_profile(
+        family_members: str,
+        shopping_habits: str,
+        role_division: str,
+        communication_preferences: str,
+    ) -> dict:
+        """Save the household profile gathered during the onboarding conversation.
+
+        Args:
+            family_members: Description of family members (names, ages, interests).
+            shopping_habits: Shopping preferences and habits.
+            role_division: Who handles what in the household.
+            communication_preferences: How they prefer to communicate and be notified.
+        """
+        db.collection('household_profile').document(user_email).set({
+            'family_members': family_members,
+            'shopping_habits': shopping_habits,
+            'role_division': role_division,
+            'communication_preferences': communication_preferences,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        })
+        saved_profile['saved'] = True
+        return {"message": "Profile saved!"}
+
+    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+
+    chat_history = []
+    for m in history:
+        role = 'user' if m['role'] == 'user' else 'model'
+        chat_history.append({'role': role, 'parts': [m['content']]})
+
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-flash',
+        system_instruction=ONBOARDING_SYSTEM_PROMPT,
+        tools=[save_household_profile],
+    )
+    chat = model.start_chat(history=chat_history, enable_automatic_function_calling=True)
+
+    user_msg = message.strip() if message.strip() else "Let's get started."
+    response = chat.send_message(user_msg)
+
+    return jsonify({
+        'reply': response.text,
+        'complete': saved_profile.get('saved', False),
+    })
+
+
+@app.route('/conversation-history', methods=['GET'])
+def get_conversation_history():
+    from conversation_history import search_history, get_recent_history
+    user_email = request.args.get('user_email', '')
+    keyword = request.args.get('keyword', '').strip()
+    limit = min(int(request.args.get('limit', 20)), 50)
+
+    if keyword:
+        results = search_history(user_email, keyword, days_back=90, limit=limit)
+    else:
+        results = get_recent_history(user_email, limit=limit)
+
+    return jsonify({'conversations': results})
+
+
+@app.route('/summarize-conversations', methods=['POST'])
+def summarize_conversations():
+    from conversation_history import summarize_old_conversations
+    count = summarize_old_conversations()
+    return jsonify({'summarized': count})
+
+
+@app.route('/agent/run', methods=['POST'])
+def agent_run():
+    agent_key = os.environ.get('AGENT_KEY', '')
+    provided_key = request.headers.get('X-Agent-Key', '')
+    if not agent_key or provided_key != agent_key:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        from agent import run_morning_agent
+        briefing_id = run_morning_agent()
+        return jsonify({'status': 'ok', 'briefing_id': briefing_id})
+    except Exception as e:
+        import traceback
+        print(f'[main] agent_run error: {traceback.format_exc()}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/briefing/latest', methods=['GET'])
+def get_latest_briefing():
+    from datetime import datetime, timezone
+    user_email = request.args.get('user_email', '')
+    if not user_email:
+        return jsonify({'error': 'Missing user_email'}), 400
+
+    db = get_db()
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+    q = db.collection('morning_briefings').order_by(
+        'timestamp', direction=firestore.Query.DESCENDING
+    ).limit(1)
+
+    briefing = None
+    for doc in q.stream():
+        d = doc.to_dict()
+        d['_doc_id'] = doc.id
+        briefing = d
+        break
+
+    if not briefing or briefing.get('date') != today:
+        return jsonify({'briefing': None})
+
+    is_dan = user_email == 'dcjohnston1@gmail.com'
+    message_key = 'dan_message' if is_dan else 'emily_message'
+    seen_key = 'dan_seen' if is_dan else 'emily_seen'
+
+    return jsonify({
+        'briefing': {
+            'id': briefing['_doc_id'],
+            'date': briefing.get('date'),
+            'message': briefing.get(message_key, ''),
+            'seen': briefing.get(seen_key, False),
+            'tasks_added': briefing.get('tasks_added', 0),
+            'emails_processed': briefing.get('emails_processed', 0),
+        }
+    })
+
+
+@app.route('/briefing/<briefing_id>/seen', methods=['POST'])
+def mark_briefing_seen(briefing_id):
+    data = request.get_json(force=True) or {}
+    user_email = data.get('user_email', '')
+    if not user_email:
+        return jsonify({'error': 'Missing user_email'}), 400
+    is_dan = user_email == 'dcjohnston1@gmail.com'
+    seen_field = 'dan_seen' if is_dan else 'emily_seen'
+    db = get_db()
+    db.collection('morning_briefings').document(briefing_id).update({seen_field: True})
+    return jsonify({'ok': True})
 
 
 @app.route('/health', methods=['GET'])

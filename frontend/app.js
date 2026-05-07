@@ -4,7 +4,27 @@ const GOOGLE_CLIENT_ID = '987132498395-o9ldqc2vqu1b36d7d8leh8d56f4eu83a.apps.goo
 
 let currentUser = null;
 let conversationHistory = [];
+let conversationId = crypto.randomUUID();
 let sessionPrevSeenAt = 0;
+let onboardingHistory = [];
+let _currentBriefingId = null;
+
+const _splashStart = Date.now();
+const _SPLASH_MIN_MS = 2800;
+let _splashDismissed = false;
+
+function dismissSplash() {
+  if (_splashDismissed) return;
+  _splashDismissed = true;
+  const splash = document.getElementById('splash-screen');
+  if (!splash) return;
+  const elapsed = Date.now() - _splashStart;
+  const delay = Math.max(0, _SPLASH_MIN_MS - elapsed);
+  setTimeout(() => {
+    splash.classList.add('splash-fadeout');
+    setTimeout(() => splash.remove(), 600);
+  }, delay);
+}
 
 function getUserEmail() {
   if (currentUser?.email) return currentUser.email;
@@ -111,6 +131,12 @@ function closeSendersScreen() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  requestAnimationFrame(() => {
+    const splash = document.getElementById('splash-screen');
+    if (splash) splash.classList.add('splash-visible');
+  });
+  setTimeout(dismissSplash, 5000); // safety net: dismiss if auth never fires
+
   // Wire up static elements
   document.getElementById('sign-out-btn').addEventListener('click', signOut);
   document.getElementById('chat-btn').addEventListener('click', openChat);
@@ -178,6 +204,15 @@ window.addEventListener('DOMContentLoaded', () => {
     openContextScreen();
   });
   document.getElementById('context-back-btn').addEventListener('click', closeContextScreen);
+
+  // Onboarding screen
+  document.getElementById('menu-onboarding').addEventListener('click', openOnboarding);
+  document.getElementById('onboarding-back-btn').addEventListener('click', closeOnboarding);
+  document.getElementById('onboarding-send-btn').addEventListener('click', submitOnboardingMessage);
+  document.getElementById('onboarding-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitOnboardingMessage(); }
+  });
+  document.getElementById('onboarding-done-btn').addEventListener('click', closeOnboarding);
   document.getElementById('add-role-btn').addEventListener('click', addRole);
   document.getElementById('new-role-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addRole();
@@ -193,6 +228,7 @@ window.addEventListener('DOMContentLoaded', () => {
     openListScreen();
   });
   document.getElementById('list-back-btn').addEventListener('click', closeListScreen);
+  document.getElementById('dedup-btn').addEventListener('click', dedupTasks);
 
   // Calendar screens
   document.getElementById('menu-this-week').addEventListener('click', () => {
@@ -225,6 +261,10 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('date-picker-close-btn').addEventListener('click', closeDatePickerModal);
   document.getElementById('date-picker-overlay').addEventListener('click', closeDatePickerModal);
 
+  // Morning briefing modal
+  document.getElementById('briefing-overlay').addEventListener('click', dismissBriefing);
+  document.getElementById('briefing-dismiss-btn').addEventListener('click', dismissBriefing);
+
   // Resync button inside Email Filters screen
   document.getElementById('resync-btn').addEventListener('click', () => resyncEmails());
 
@@ -245,6 +285,7 @@ window.addEventListener('DOMContentLoaded', () => {
 function showMainApp(user) {
   if (currentUser) return;
   currentUser = user;
+  dismissSplash();
   sessionPrevSeenAt = getLastSeenAt();
   setLastSeenAt(Date.now());
   document.getElementById('login-screen').classList.add('hidden');
@@ -258,6 +299,7 @@ function showMainApp(user) {
   loadProposals();
   initVoice();
   initPullToRefresh();
+  checkMorningBriefing();
 }
 
 function openMembersScreen() {
@@ -400,9 +442,63 @@ async function loadEmailFilters() {
     const res = await fetch(`${BACKEND_URL}/email-filters`);
     const data = await res.json();
     renderSenders(data.filters || []);
-    loadEmails(data.filters || []);
+    await loadCachedEmails(data.filters || []);
+    backgroundSync(data.filters || []);
   } catch (err) {
     document.getElementById('emails-content').textContent = `Error loading filters: ${err.message}`;
+  }
+}
+
+async function loadCachedEmails(filters) {
+  const emailsContent = document.getElementById('emails-content');
+  if (!filters || filters.length === 0) {
+    emailsContent.innerHTML = '<div class="empty-state">Add a sender via the menu to see their emails here.</div>';
+    return;
+  }
+  try {
+    const res = await fetch(`${BACKEND_URL}/emails/cached`);
+    if (!res.ok) throw new Error('Failed to fetch cached emails');
+    const data = await res.json();
+    const emails = data.emails || [];
+    emailsContent.innerHTML = '';
+    if (emails.length === 0) {
+      emailsContent.innerHTML = '<div class="empty-state">No recent emails found.</div>';
+      return;
+    }
+    emails.sort((a, b) => new Date(b.date) - new Date(a.date));
+    emails.forEach(email => {
+      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
+      emailsContent.appendChild(buildEmailCard(email, isNew));
+    });
+    wireSearchInput(emailsContent);
+  } catch (err) {
+    emailsContent.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function backgroundSync(filters) {
+  if (!filters || filters.length === 0) return;
+  try {
+    const res = await fetch(`${BACKEND_URL}/emails`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const emails = data.emails || [];
+    const emailsContent = document.getElementById('emails-content');
+    const currentIds = new Set(
+      [...emailsContent.querySelectorAll('.email-card-wrapper[data-email-id]')]
+        .map(el => el.dataset.emailId)
+    );
+    const newEmails = emails.filter(e => !currentIds.has(e.id));
+    if (newEmails.length === 0) return;
+    newEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
+    newEmails.forEach(email => {
+      emailsContent.insertBefore(buildEmailCard(email, true), emailsContent.firstChild);
+    });
+    wireSearchInput(emailsContent);
+    const label = newEmails.length === 1 ? '1 new email' : `${newEmails.length} new emails`;
+    showToast(label);
+  } catch {
+    // silent — background sync failure is non-fatal
   }
 }
 
@@ -580,7 +676,8 @@ function buildEmailCard(email, isNew = false) {
   const wrapper = document.createElement('div');
   wrapper.className = 'email-card-wrapper';
   wrapper.dataset.emailId = email.id;
-  wrapper.innerHTML = '<div class="swipe-dismiss-bg">Dismiss ✕</div>';
+  wrapper.dataset.emailSender = email.sender;
+  wrapper.innerHTML = '<div class="swipe-email-action-bg swipe-dismiss-bg">Dismiss ✕</div>';
 
   const card = document.createElement('div');
   card.className = 'email-card';
@@ -651,7 +748,7 @@ function buildEmailCard(email, isNew = false) {
 
   buildProposalsSection(card, email);
   wrapper.appendChild(card);
-  addSwipeToDismiss(wrapper, card, email.id);
+  addSwipeToDismiss(wrapper, card, email.id, email.sender);
   return wrapper;
 }
 
@@ -743,7 +840,8 @@ function buildProposalRow(p, emailId, card) {
 }
 
 function addSwipeToProposalRow(wrapper, row, bg, proposalId, emailId, card) {
-  let startX = 0, deltaX = 0, dragging = false, snapped = false;
+  let startX = 0, startY = 0, deltaX = 0;
+  let dragging = false, snapped = false, axisLocked = false, axisIsHorizontal = false;
   const SNAP_WIDTH = 196;
 
   function snapBack() {
@@ -754,17 +852,30 @@ function addSwipeToProposalRow(wrapper, row, bg, proposalId, emailId, card) {
 
   row.addEventListener('touchstart', (e) => {
     if (row.classList.contains('proposal-row--handled')) return;
+    e.stopPropagation();
     if (snapped) { snapBack(); return; }
     startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
     dragging = true;
+    axisLocked = false;
+    axisIsHorizontal = false;
     row.style.transition = 'none';
   }, { passive: true });
 
   row.addEventListener('touchmove', (e) => {
     if (!dragging) return;
-    deltaX = e.touches[0].clientX - startX;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      axisLocked = true;
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
+    }
+    if (!axisIsHorizontal) return;
+    e.preventDefault();
+    deltaX = dx;
     if (deltaX > 0) row.style.transform = `translateX(${Math.min(deltaX, SNAP_WIDTH)}px)`;
-  }, { passive: true });
+  }, { passive: false });
 
   row.addEventListener('touchend', () => {
     if (!dragging) return;
@@ -901,8 +1012,6 @@ async function loadEmails(filters, preserveExisting = false) {
     refreshBanner.className = 'email-refresh-banner';
     refreshBanner.textContent = 'Refreshing…';
     emailsContent.insertBefore(refreshBanner, emailsContent.firstChild);
-  } else {
-    emailsContent.innerHTML = '<div class="loading">Fetching emails...</div>';
   }
 
   try {
@@ -1077,6 +1186,27 @@ async function loadProposals() {
 
 // ── Shared List ───────────────────────────────────────────────────────────────
 
+async function dedupTasks() {
+  const btn = document.getElementById('dedup-btn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const res = await fetch(`${BACKEND_URL}/doc/dedup`, { method: 'POST' });
+    const data = await res.json();
+    if (data.removed > 0) {
+      showToast(`Removed ${data.removed} duplicate${data.removed === 1 ? '' : 's'}`);
+      loadListScreen();
+    } else {
+      showToast('No duplicates found');
+    }
+  } catch (err) {
+    showToast('Error removing duplicates');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Remove Duplicates';
+  }
+}
+
 function openListScreen() {
   document.getElementById('list-screen').classList.remove('hidden');
   loadListScreen();
@@ -1150,25 +1280,34 @@ async function loadListScreen() {
 // ── Swipe to complete ─────────────────────────────────────────────────────────
 
 function addSwipeToComplete(wrapper, card, title, task) {
-  let startX = 0, deltaX = 0, dragging = false, didSwipe = false;
+  let startX = 0, startY = 0, deltaX = 0;
+  let dragging = false, didSwipe = false, axisLocked = false, axisIsHorizontal = false;
 
   card.addEventListener('touchstart', (e) => {
     startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
     dragging = true;
     didSwipe = false;
+    axisLocked = false;
+    axisIsHorizontal = false;
     card.style.transition = 'none';
   }, { passive: true });
 
   card.addEventListener('touchmove', (e) => {
     if (!dragging) return;
-    deltaX = e.touches[0].clientX - startX;
-    if (Math.abs(deltaX) > 10) didSwipe = true;
-    if (deltaX < 0) {
-      card.style.transform = `translateX(${deltaX}px)`;
-    } else if (deltaX > 0) {
-      card.style.transform = `translateX(${deltaX}px)`;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      axisLocked = true;
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
     }
-  }, { passive: true });
+    if (!axisIsHorizontal) return;
+    e.preventDefault();
+    deltaX = dx;
+    if (Math.abs(deltaX) > 10) didSwipe = true;
+    card.style.transform = `translateX(${deltaX}px)`;
+  }, { passive: false });
 
   card.addEventListener('touchend', () => {
     if (!dragging) return;
@@ -1210,22 +1349,39 @@ async function completeTask(title) {
 
 // ── Swipe to dismiss (emails) ─────────────────────────────────────────────────
 
-function addSwipeToDismiss(wrapper, card, emailId) {
-  let startX = 0;
-  let deltaX = 0;
-  let dragging = false;
+function addSwipeToDismiss(wrapper, card, emailId, senderEmail) {
+  let startX = 0, startY = 0, deltaX = 0;
+  let dragging = false, axisLocked = false, axisIsHorizontal = false;
+  const bgEl = wrapper.querySelector('.swipe-email-action-bg');
 
   card.addEventListener('touchstart', (e) => {
     startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
     dragging = true;
+    axisLocked = false;
+    axisIsHorizontal = false;
+    deltaX = 0;
     card.style.transition = 'none';
   }, { passive: true });
 
   card.addEventListener('touchmove', (e) => {
     if (!dragging) return;
-    deltaX = e.touches[0].clientX - startX;
-    if (deltaX < 0) card.style.transform = `translateX(${deltaX}px)`;
-  }, { passive: true });
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      axisLocked = true;
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
+    }
+    if (!axisIsHorizontal) return;
+    e.preventDefault();
+    deltaX = dx;
+    if (bgEl) {
+      if (deltaX > 0) { bgEl.textContent = 'Block Sender 🚫'; bgEl.className = 'swipe-email-action-bg swipe-block-bg'; }
+      else { bgEl.textContent = 'Dismiss ✕'; bgEl.className = 'swipe-email-action-bg swipe-dismiss-bg'; }
+    }
+    card.style.transform = `translateX(${deltaX}px)`;
+  }, { passive: false });
 
   card.addEventListener('touchend', () => {
     if (!dragging) return;
@@ -1237,11 +1393,40 @@ function addSwipeToDismiss(wrapper, card, emailId) {
       card.style.opacity = '0';
       card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
       dismissEmail(emailId);
+    } else if (deltaX > 80 && senderEmail) {
+      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+      card.style.transform = 'translateX(100%)';
+      card.style.opacity = '0';
+      card.addEventListener('transitionend', () => {
+        wrapper.remove();
+        removeEmailsBySender(senderEmail);
+      }, { once: true });
+      blockSender(senderEmail);
     } else {
+      if (bgEl) { bgEl.textContent = 'Dismiss ✕'; bgEl.className = 'swipe-email-action-bg swipe-dismiss-bg'; }
       card.style.transition = 'transform 0.25s ease';
       card.style.transform = 'translateX(0)';
     }
     deltaX = 0;
+  });
+}
+
+async function blockSender(senderEmail) {
+  showToast('Sender blocked');
+  try {
+    await fetch(`${BACKEND_URL}/blocked-senders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: senderEmail, user: getUserEmail() })
+    });
+  } catch (err) {
+    console.error('Failed to block sender:', err);
+  }
+}
+
+function removeEmailsBySender(senderEmail) {
+  document.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
+    if (wrapper.dataset.emailSender === senderEmail) wrapper.remove();
   });
 }
 
@@ -1255,10 +1440,8 @@ async function dismissEmail(emailId) {
 }
 
 function addSwipeToAssign(wrapper, card, proposalId) {
-  let startX = 0;
-  let deltaX = 0;
-  let dragging = false;
-  let snapped = false;
+  let startX = 0, startY = 0, deltaX = 0;
+  let dragging = false, snapped = false, axisLocked = false, axisIsHorizontal = false;
   const SNAP_WIDTH = 164;
 
   function snapBack() {
@@ -1268,17 +1451,30 @@ function addSwipeToAssign(wrapper, card, proposalId) {
   }
 
   card.addEventListener('touchstart', (e) => {
+    e.stopPropagation();
     if (snapped) { snapBack(); return; }
     startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
     dragging = true;
+    axisLocked = false;
+    axisIsHorizontal = false;
     card.style.transition = 'none';
   }, { passive: true });
 
   card.addEventListener('touchmove', (e) => {
     if (!dragging) return;
-    deltaX = e.touches[0].clientX - startX;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      axisLocked = true;
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
+    }
+    if (!axisIsHorizontal) return;
+    e.preventDefault();
+    deltaX = dx;
     if (deltaX > 0) card.style.transform = `translateX(${Math.min(deltaX, SNAP_WIDTH)}px)`;
-  }, { passive: true });
+  }, { passive: false });
 
   card.addEventListener('touchend', () => {
     if (!dragging) return;
@@ -1403,7 +1599,7 @@ async function sendMessage(fromVoice = false) {
     const res = await fetch(`${BACKEND_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: currentUser.name, message: text, history: conversationHistory })
+      body: JSON.stringify({ user: currentUser.name, user_email: currentUser.email, message: text, history: conversationHistory, conversation_id: conversationId })
     });
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
@@ -1435,6 +1631,81 @@ function appendMessage(sender, text, isTyping = false) {
   messages.appendChild(bubble);
   messages.scrollTop = messages.scrollHeight;
   return bubble;
+}
+
+// ── Onboarding ────────────────────────────────────────────────────────────────
+
+function openOnboarding() {
+  closeDrawer();
+  onboardingHistory = [];
+  document.getElementById('onboarding-messages').innerHTML = '';
+  document.getElementById('onboarding-input').value = '';
+  document.getElementById('onboarding-input-row').classList.remove('hidden');
+  document.getElementById('onboarding-success').classList.add('hidden');
+  document.getElementById('onboarding-screen').classList.remove('hidden');
+  _sendOnboardingTurn('');
+}
+
+function closeOnboarding() {
+  document.getElementById('onboarding-screen').classList.add('hidden');
+  onboardingHistory = [];
+}
+
+function _appendOnboardingBubble(sender, text, isTyping = false) {
+  const messages = document.getElementById('onboarding-messages');
+  const bubble = document.createElement('div');
+  bubble.className = `bubble ${sender === 'saucer' ? 'saucer' : 'user'}`;
+  if (isTyping) bubble.classList.add('typing');
+  bubble.textContent = text;
+  messages.appendChild(bubble);
+  messages.scrollTop = messages.scrollHeight;
+  return bubble;
+}
+
+async function _sendOnboardingTurn(text) {
+  const sendBtn = document.getElementById('onboarding-send-btn');
+  sendBtn.disabled = true;
+  const typing = _appendOnboardingBubble('saucer', '…', true);
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/onboarding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_email: currentUser.email,
+        message: text,
+        history: onboardingHistory,
+      }),
+    });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    typing.remove();
+    _appendOnboardingBubble('saucer', data.reply);
+
+    onboardingHistory.push(
+      { role: 'user', content: text },
+      { role: 'assistant', content: data.reply },
+    );
+
+    if (data.complete) {
+      document.getElementById('onboarding-input-row').classList.add('hidden');
+      document.getElementById('onboarding-success').classList.remove('hidden');
+    }
+  } catch (err) {
+    typing.remove();
+    _appendOnboardingBubble('saucer', `Something went wrong: ${err.message}`);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+function submitOnboardingMessage() {
+  const input = document.getElementById('onboarding-input');
+  const text = input.value.trim();
+  if (!text) return;
+  _appendOnboardingBubble('user', text);
+  input.value = '';
+  _sendOnboardingTurn(text);
 }
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
@@ -1988,4 +2259,42 @@ function closeDatePickerModal() {
   _pendingCalendarTask = null;
   _pendingCalendarCard = null;
   _pendingCalendarWrapper = null;
+}
+
+// ── Morning Briefing ──────────────────────────────────────────────────────────
+
+async function checkMorningBriefing() {
+  try {
+    const email = currentUser.email;
+    const res = await fetch(`${BACKEND_URL}/briefing/latest?user_email=${encodeURIComponent(email)}`);
+    const data = await res.json();
+    if (data.briefing && !data.briefing.seen && data.briefing.message) {
+      showBriefingModal(data.briefing);
+    }
+  } catch (e) {
+    console.error('Briefing check failed:', e);
+  }
+}
+
+function showBriefingModal(briefing) {
+  _currentBriefingId = briefing.id;
+  document.getElementById('briefing-body').textContent = briefing.message;
+  document.getElementById('briefing-overlay').classList.remove('hidden');
+  document.getElementById('briefing-modal').classList.remove('hidden');
+}
+
+async function dismissBriefing() {
+  document.getElementById('briefing-overlay').classList.add('hidden');
+  document.getElementById('briefing-modal').classList.add('hidden');
+  if (_currentBriefingId && currentUser) {
+    const id = _currentBriefingId;
+    _currentBriefingId = null;
+    try {
+      await fetch(`${BACKEND_URL}/briefing/${id}/seen`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_email: currentUser.email }),
+      });
+    } catch {}
+  }
 }

@@ -4,10 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=21.0" />
+  <link rel="stylesheet" href="style.css?v=25.6" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
+  <div id="splash-screen">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 390 200" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <path d="M 0,65 C 33,35 65,35 97,65 C 130,95 163,95 195,65 C 228,35 260,35 292,65 C 325,95 358,95 390,65" stroke="#c4785a" stroke-width="20" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 0,95 C 33,65 65,65 97,95 C 130,125 163,125 195,95 C 228,65 260,65 292,95 C 325,125 358,125 390,95" stroke="#c4785a" stroke-width="20" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 0,125 C 33,95 65,95 97,125 C 130,155 163,155 195,125 C 228,95 260,95 292,125 C 325,155 358,155 390,125" stroke="#c4785a" stroke-width="20" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
   <div id="app">
     <header>
       <button id="hamburger-btn" class="hamburger-btn hidden" aria-label="Open menu">
@@ -38,6 +45,7 @@
         <li class="drawer-item" id="menu-members">Members</li>
         <li class="drawer-item" id="menu-usage">Usage</li>
         <li class="drawer-item" id="menu-context">My Profile</li>
+        <li class="drawer-item" id="menu-onboarding">Personalize your experience</li>
       </ul>
     </nav>
 
@@ -77,6 +85,7 @@
         <span class="screen-title">Shared List</span>
       </div>
       <div class="screen-body">
+        <button id="dedup-btn" class="resync-btn">Remove Duplicates</button>
         <div id="list-screen-content"></div>
       </div>
     </div>
@@ -142,6 +151,23 @@
           <input id="new-preference-input" type="text" placeholder="Add a preference..." />
           <button id="add-preference-btn">Add</button>
         </div>
+      </div>
+    </div>
+
+    <div id="onboarding-screen" class="screen hidden">
+      <div class="screen-header">
+        <button id="onboarding-back-btn" class="back-btn">&#8592; Back</button>
+        <span class="screen-title">Personalize your experience</span>
+      </div>
+      <div id="onboarding-messages" class="onboarding-messages"></div>
+      <div id="onboarding-input-row" class="onboarding-input-row">
+        <textarea id="onboarding-input" placeholder="Type a message…" rows="2"></textarea>
+        <button id="onboarding-send-btn">Send</button>
+      </div>
+      <div id="onboarding-success" class="onboarding-success hidden">
+        <div class="onboarding-success-icon">✓</div>
+        <p class="onboarding-success-text">Profile saved! Saucer will use this to personalize your experience.</p>
+        <button id="onboarding-done-btn" class="modal-save-btn">Done</button>
       </div>
     </div>
 
@@ -228,6 +254,14 @@
       <p id="login-error" class="hidden">Access denied. This app is private.</p>
     </div>
 
+    <!-- Morning Briefing Modal -->
+    <div id="briefing-overlay" class="modal-overlay hidden"></div>
+    <div id="briefing-modal" class="briefing-modal hidden">
+      <div class="briefing-modal-title">Good morning</div>
+      <div class="briefing-modal-body" id="briefing-body"></div>
+      <button id="briefing-dismiss-btn" class="modal-save-btn">Got it</button>
+    </div>
+
     <div id="toast" class="toast hidden"></div>
 
     <div id="main-app" class="hidden">
@@ -264,6 +298,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=16.1"></script>
+  <script src="app.js?v=21.6"></script>
 </body>
 </html>

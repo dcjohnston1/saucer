@@ -15,10 +15,10 @@ def get_service():
     )
     return build('calendar', 'v3', credentials=creds)
 
-def get_events(start_iso, end_iso):
+def get_events(start_iso, end_iso, calendar_id=None):
     service = get_service()
     result = service.events().list(
-        calendarId=CALENDAR_ID,
+        calendarId=calendar_id or CALENDAR_ID,
         timeMin=start_iso,
         timeMax=end_iso,
         singleEvents=True,

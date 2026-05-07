@@ -80,7 +80,11 @@ def summarize_emails(emails):
         body = (e.get('body') or e.get('snippet', ''))[:600]
         blocks.append(f"EMAIL_ID: {e['id']}\nSubject: {e['subject']}\nFrom: {e['sender']}\nBody: {body}")
 
-    prompt = """Summarize each email in ONE sentence of 140 characters or fewer. Be specific and actionable.
+    prompt = """Summarize each email in up to 140 characters. Lead with the main point or action required — not who sent it. Be specific: mention dates, amounts, deadlines, or events by name. Never start with "Email from" or the sender's name.
+
+Bad: "Email from Atlanta Area Council, Scouting America"
+Good: "Scouts baseball game June 3 at 6pm — permission slip due May 20"
+
 Return ONLY valid JSON: [{"email_id": "<id>", "summary": "<summary>"}]
 
 Emails:

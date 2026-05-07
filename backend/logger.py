@@ -17,6 +17,7 @@ _ACTION_LABELS = {
     'task_completed':             ('completed',   'task',                'tasks'),
     'task_added':                 ('added',       'task',                'tasks'),
     'task_swiped_to_calendar':    ('added',       'task to calendar',    'tasks to calendar'),
+    'task_reassigned':            ('reassigned',  'task',                'tasks'),
     'proposal_accepted':          ('accepted',    'proposal',            'proposals'),
     'proposal_dismissed':         ('dismissed',   'proposal',            'proposals'),
     'calendar_event_added':       ('added',       'calendar event',      'calendar events'),
@@ -32,7 +33,8 @@ _ACTION_LABELS = {
 }
 
 
-def log_action(user: str, action_type: str, metadata: dict = None):
+def log_action(user: str, action_type: str, metadata: dict = None,
+               actor: str = 'user', reasoning: str = None):
     """Fire-and-forget write to Firestore user_actions collection."""
     def _write():
         try:
@@ -40,14 +42,71 @@ def log_action(user: str, action_type: str, metadata: dict = None):
             doc = {
                 'user': user or 'unknown',
                 'action_type': action_type,
+                'actor': actor,
                 'timestamp': datetime.now(timezone.utc),
             }
             if metadata:
                 doc.update(metadata)
+            if reasoning:
+                doc['reasoning'] = reasoning
             db.collection('user_actions').add(doc)
         except Exception as e:
             print(f'[logger] log_action failed: {e}')
     threading.Thread(target=_write, daemon=True).start()
+
+
+def log_gemini_decision(action_type: str, input_context: str, context_consulted: str,
+                        decision_made: str, reasoning: str, confidence: str = 'medium',
+                        user_email: str = None):
+    """Fire-and-forget write to Firestore gemini_decisions collection."""
+    def _write():
+        try:
+            db = _firestore.Client(project=_PROJECT)
+            doc = {
+                'action_type': action_type,
+                'input_context': input_context,
+                'context_consulted': context_consulted,
+                'decision_made': decision_made,
+                'reasoning': reasoning,
+                'confidence': confidence,
+                'actor': 'gemini',
+                'timestamp': datetime.now(timezone.utc),
+            }
+            if user_email:
+                doc['user_email'] = user_email
+            db.collection('gemini_decisions').add(doc)
+        except Exception as e:
+            print(f'[logger] log_gemini_decision failed: {e}')
+    threading.Thread(target=_write, daemon=True).start()
+
+
+def get_recent_decisions(user_email=None, action_type=None, limit=20, since=None):
+    """Return recent Gemini decisions from Firestore gemini_decisions collection."""
+    db = _firestore.Client(project=_PROJECT)
+
+    if since:
+        since_dt = datetime.fromisoformat(since.replace('Z', '+00:00')) if isinstance(since, str) else since
+    else:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+
+    q = (db.collection('gemini_decisions')
+           .where('timestamp', '>=', since_dt)
+           .order_by('timestamp', direction=_firestore.Query.DESCENDING))
+
+    decisions = []
+    for doc in q.stream():
+        d = doc.to_dict()
+        d['id'] = doc.id
+        if user_email and d.get('user_email') != user_email:
+            continue
+        if action_type and d.get('action_type') != action_type:
+            continue
+        if 'timestamp' in d:
+            d['timestamp'] = d['timestamp'].isoformat()
+        decisions.append(d)
+        if len(decisions) >= limit:
+            break
+    return decisions
 
 
 def get_recent_actions(user=None, action_type=None, limit=20, since=None):

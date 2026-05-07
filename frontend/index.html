@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=25.8" />
+  <link rel="stylesheet" href="style.css?v=25.9" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
@@ -113,6 +113,18 @@
                 <input id="new-exclude-keyword-input" type="text" placeholder="Add word to exclude..." />
                 <button id="add-exclude-keyword-btn">Add</button>
               </div>
+            </div>
+          </div>
+
+          <div class="accordion-section">
+            <button class="accordion-header accordion-header--blocked" data-target="accordion-topics-body">
+              <span class="accordion-title">Blocked Topics</span>
+              <span class="accordion-badge accordion-badge--blocked" id="badge-topics">0</span>
+              <span class="accordion-chevron">›</span>
+            </button>
+            <div class="accordion-body hidden" id="accordion-topics-body">
+              <p class="filter-section-hint">Specific types of emails blocked via swipe gesture.</p>
+              <div id="blocked-topics-list"></div>
             </div>
           </div>
         </div>
@@ -273,6 +285,34 @@
       <div class="bottom-modal-body" id="task-detail-body"></div>
     </div>
 
+    <!-- Block Options Sheet (right-swipe on email) -->
+    <div id="block-options-overlay" class="modal-overlay hidden"></div>
+    <div id="block-options-sheet" class="bottom-modal hidden">
+      <div class="bottom-modal-header">
+        <span class="bottom-modal-title" id="block-options-sender"></span>
+        <button id="block-options-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="bottom-modal-body">
+        <button id="block-sender-btn" class="block-option-btn">Block Sender — hide all emails from this address</button>
+        <button id="block-topic-btn" class="block-option-btn block-option-btn--topic">Block this type — let AI identify the category and block it</button>
+      </div>
+    </div>
+
+    <!-- Topic Block Confirmation Drawer -->
+    <div id="topic-block-overlay" class="modal-overlay hidden"></div>
+    <div id="topic-block-drawer" class="bottom-modal hidden">
+      <div class="bottom-modal-header">
+        <span class="bottom-modal-title">Block this type</span>
+        <button id="topic-block-close-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="bottom-modal-body">
+        <p class="filter-section-hint" id="topic-block-hint">Emails of this type from <strong id="topic-block-sender-label"></strong> will be hidden.</p>
+        <label class="form-label">Category label</label>
+        <input id="topic-block-label-input" type="text" class="form-input" placeholder="e.g. Home Depot promotional offers" />
+        <button id="topic-block-confirm-btn" class="modal-save-btn" style="margin-top:12px">Block this type</button>
+      </div>
+    </div>
+
     <!-- Date Picker Modal (right-swipe to calendar) -->
     <div id="date-picker-overlay" class="modal-overlay hidden"></div>
     <div id="date-picker-modal" class="bottom-modal hidden">
@@ -338,6 +378,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=21.8"></script>
+  <script src="app.js?v=21.9"></script>
 </body>
 </html>

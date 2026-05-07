@@ -204,6 +204,10 @@ def get_emails():
     if blocked_senders:
         visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
 
+    blocked_topics_by_sender = _load_blocked_topics_by_sender(db)
+    if blocked_topics_by_sender:
+        visible = [e for e in visible if not _topic_blocked(e, blocked_topics_by_sender)]
+
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))
     proposals = read_json('saucer-proposals.json', {})
@@ -607,6 +611,110 @@ def remove_blocked_sender(email):
     return jsonify({'ok': True})
 
 
+# ── Topic blocking ────────────────────────────────────────────────────────────
+
+def _gemini_text(prompt: str) -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    return model.generate_content(prompt).text.strip()
+
+
+@app.route('/generate-topic-label', methods=['POST'])
+def generate_topic_label():
+    data = request.get_json()
+    subject = (data.get('subject') or '').strip()
+    body_preview = (data.get('body_preview') or '').strip()[:300]
+    if not subject:
+        return jsonify({'error': 'Missing subject'}), 400
+    prompt = (
+        f"In 4-6 words, what type of email is this? Be specific but general enough "
+        f"to apply to future similar emails from the same sender. "
+        f"Examples: 'Home Depot promotional offers', 'school newsletter updates', "
+        f"'credit card marketing'. Return only the label, nothing else.\n\n"
+        f"Subject: {subject}\nPreview: {body_preview}"
+    )
+    label = _gemini_text(prompt)
+    return jsonify({'label': label})
+
+
+@app.route('/blocked-topics', methods=['GET'])
+def get_blocked_topics():
+    db = get_db()
+    docs = db.collection('blocked_topics').stream()
+    topics = []
+    for doc in docs:
+        d = doc.to_dict()
+        d['id'] = doc.id
+        topics.append(d)
+    return jsonify({'topics': topics})
+
+
+@app.route('/blocked-topics', methods=['POST'])
+def add_blocked_topic():
+    from datetime import datetime, timezone
+    data = request.get_json()
+    sender = (data.get('sender') or '').strip()
+    label = (data.get('label') or '').strip()
+    description = (data.get('description') or label).strip()
+    if not sender or not label:
+        return jsonify({'error': 'Missing sender or label'}), 400
+    db = get_db()
+    doc_id = str(uuid.uuid4())
+    db.collection('blocked_topics').document(doc_id).set({
+        'sender': sender,
+        'label': label,
+        'description': description,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'created_by': _req_user(data),
+    })
+    log_action(_req_user(data), 'topic_blocked', {'sender': sender, 'label': label}, actor='user')
+    return jsonify({'ok': True, 'id': doc_id})
+
+
+@app.route('/blocked-topics/<topic_id>', methods=['DELETE'])
+def remove_blocked_topic(topic_id):
+    db = get_db()
+    db.collection('blocked_topics').document(topic_id).delete()
+    user = _req_user()
+    log_action(user, 'topic_unblocked', {'id': topic_id}, actor='user')
+    return jsonify({'ok': True})
+
+
+def _load_blocked_topics_by_sender(db):
+    """Return dict mapping sender -> list of labels for topic-blocked senders."""
+    docs = db.collection('blocked_topics').stream()
+    by_sender = {}
+    for doc in docs:
+        d = doc.to_dict()
+        sender = d.get('sender', '').lower()
+        if sender:
+            by_sender.setdefault(sender, []).append(d.get('label', ''))
+    return by_sender
+
+
+def _topic_blocked(email_dict, blocked_topics_by_sender) -> bool:
+    """Return True if the email matches any blocked topic rule for its sender."""
+    sender = email_dict.get('sender', '').lower()
+    if not sender:
+        return False
+    labels = blocked_topics_by_sender.get(sender, [])
+    if not labels:
+        return False
+    subject = email_dict.get('subject', '')
+    preview = (email_dict.get('body') or email_dict.get('snippet') or '')[:300]
+    for label in labels:
+        prompt = (
+            f"Does this email match the topic '{label}'? "
+            f"Subject: '{subject}'. Preview: '{preview}'. "
+            f"Answer only yes or no."
+        )
+        answer = _gemini_text(prompt).lower()
+        if answer.startswith('yes'):
+            return True
+    return False
+
+
 @app.route('/calendar/events', methods=['GET'])
 def get_calendar_events():
     from gcalendar import get_events
@@ -929,6 +1037,200 @@ def mark_briefing_seen(briefing_id):
     db = get_db()
     db.collection('morning_briefings').document(briefing_id).update({seen_field: True})
     return jsonify({'ok': True})
+
+
+@app.route('/agent/email-trigger', methods=['POST'])
+def agent_email_trigger():
+    """Pub/Sub push webhook — fires when Gmail delivers a new message notification."""
+    import base64 as _base64
+    import json as _json
+    import threading
+
+    envelope = request.get_json(force=True) or {}
+    message = envelope.get('message', {})
+    data_b64 = message.get('data', '')
+
+    if not data_b64:
+        return jsonify({'ok': True})
+
+    try:
+        payload = _json.loads(_base64.b64decode(data_b64).decode('utf-8'))
+    except Exception:
+        return jsonify({'ok': True})
+
+    email_address = payload.get('emailAddress', '')
+    new_history_id = str(payload.get('historyId', ''))
+    print(f"[email-trigger] account={email_address} historyId={new_history_id}")
+
+    if not new_history_id:
+        return jsonify({'ok': True})
+
+    _DAN = 'dcjohnston1@gmail.com'
+    _EMILY = 'emily.osteen.johnston@gmail.com'
+
+    if email_address == _DAN:
+        history_key = 'last_history_id_dan'
+        refresh_token_key = 'GMAIL_REFRESH_TOKEN'
+    elif email_address == _EMILY:
+        history_key = 'last_history_id_emily'
+        refresh_token_key = 'GMAIL_REFRESH_TOKEN_2'
+    else:
+        print(f"[email-trigger] unknown account: {email_address}, ignoring")
+        return jsonify({'ok': True})
+
+    from gcs import read_json, write_json
+    config = read_json('saucer-config.json', {})
+    last_history_id = config.get(history_key)
+
+    # First notification — store baseline and exit; nothing to diff yet
+    if not last_history_id:
+        config[history_key] = new_history_id
+        write_json('saucer-config.json', config)
+        print(f"[email-trigger] initialized {history_key}={new_history_id}")
+        return jsonify({'ok': True})
+
+    # Advance the stored historyId immediately for idempotency on Pub/Sub retries
+    config[history_key] = new_history_id
+    write_json('saucer-config.json', config)
+
+    from gmail_scanner import _build_service, fetch_new_messages_since, setup_gmail_watch
+    service = _build_service(refresh_token_key)
+    if not service:
+        print(f"[email-trigger] no Gmail service for {email_address}")
+        return jsonify({'ok': True})
+
+    new_emails, latest_history_id = fetch_new_messages_since(service, last_history_id)
+
+    if latest_history_id is None:
+        # History is stale — re-watch to reset baseline; process nothing this round
+        print(f"[email-trigger] stale historyId for {email_address}, re-watching")
+        try:
+            resp = setup_gmail_watch(service, 'projects/mediationmate/topics/saucer-gmail-push')
+            fresh_id = str(resp.get('historyId', ''))
+            if fresh_id:
+                config[history_key] = fresh_id
+                write_json('saucer-config.json', config)
+        except Exception as e:
+            print(f"[email-trigger] re-watch error: {e}")
+        return jsonify({'ok': True})
+
+    if latest_history_id and latest_history_id != new_history_id:
+        config[history_key] = latest_history_id
+        write_json('saucer-config.json', config)
+
+    print(f"[email-trigger] {len(new_emails)} new message(s) for {email_address}")
+    if not new_emails:
+        return jsonify({'ok': True})
+
+    # Merge into stored emails so they appear in the app immediately
+    stored = read_json('saucer-emails.json', [])
+    existing_ids = {e['id'] for e in stored}
+    fresh = [e for e in new_emails if e['id'] not in existing_ids]
+    if fresh:
+        write_json('saucer-emails.json', fresh + stored)
+
+    # Load filters from Firestore
+    db = get_db()
+    sender_doc = db.collection('settings').document('email_filters').get()
+    sender_filters = [s.lower() for s in (sender_doc.to_dict().get('addresses', []) if sender_doc.exists else [])]
+
+    kw_doc = db.collection('settings').document('keyword_filters').get()
+    keyword_filters = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
+
+    blocked_doc = db.collection('settings').document('blocked_senders').get()
+    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+
+    excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
+    exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+
+    blocked_topics_by_sender = _load_blocked_topics_by_sender(db)
+
+    def _sender_matches(sender_str):
+        s = sender_str.lower()
+        return any(f in s for f in sender_filters)
+
+    def _keyword_matches(email_dict):
+        haystack = ' '.join([
+            email_dict.get('subject', ''),
+            (email_dict.get('body', '') or email_dict.get('snippet', ''))[:2000],
+        ]).lower()
+        return any(kw in haystack for kw in keyword_filters)
+
+    def _is_excluded(email_dict):
+        sender_str = email_dict.get('sender', '').lower()
+        if any(b in sender_str for b in blocked_senders):
+            return True
+        if exclude_keywords:
+            haystack = ' '.join([
+                email_dict.get('subject', ''),
+                email_dict.get('sender', ''),
+                (email_dict.get('body', '') or email_dict.get('snippet', ''))[:500],
+            ]).lower()
+            if any(kw in haystack for kw in exclude_keywords):
+                return True
+        if _topic_blocked(email_dict, blocked_topics_by_sender):
+            return True
+        return False
+
+    for email in new_emails:
+        subj = email.get('subject', '(no subject)')
+        if _is_excluded(email):
+            print(f"[email-trigger] excluded: {subj}")
+            continue
+        if not (_sender_matches(email.get('sender', '')) or _keyword_matches(email)):
+            print(f"[email-trigger] no filter match, skipping: {subj}")
+            continue
+
+        print(f"[email-trigger] qualifying — spawning agent for: {subj}")
+
+        def _process(e=email):
+            try:
+                from agent import process_single_email
+                process_single_email(e)
+            except Exception as ex:
+                print(f"[email-trigger] process_single_email error: {ex}")
+
+        threading.Thread(target=_process, daemon=False).start()
+
+    return jsonify({'ok': True})
+
+
+@app.route('/agent/renew-gmail-watch', methods=['POST'])
+def renew_gmail_watch():
+    """Renew Gmail push watch for all configured accounts. Called by Cloud Scheduler every 6 days."""
+    agent_key = os.environ.get('AGENT_KEY', '')
+    provided_key = request.headers.get('X-Agent-Key', '')
+    if not agent_key or provided_key != agent_key:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    topic = 'projects/mediationmate/topics/saucer-gmail-push'
+    results = {}
+
+    from gmail_scanner import _build_service, setup_gmail_watch
+    from gcs import read_json, write_json
+
+    for token_key, history_key, label in [
+        ('GMAIL_REFRESH_TOKEN', 'last_history_id_dan', 'dan'),
+        ('GMAIL_REFRESH_TOKEN_2', 'last_history_id_emily', 'emily'),
+    ]:
+        svc = _build_service(token_key)
+        if not svc:
+            results[label] = 'no_service'
+            continue
+        try:
+            resp = setup_gmail_watch(svc, topic)
+            history_id = str(resp.get('historyId', ''))
+            if history_id:
+                config = read_json('saucer-config.json', {})
+                config[history_key] = history_id
+                write_json('saucer-config.json', config)
+            results[label] = {'historyId': history_id, 'expiration': resp.get('expiration')}
+            print(f"[renew-watch] {label}: historyId={history_id} expiration={resp.get('expiration')}")
+        except Exception as e:
+            results[label] = {'error': str(e)}
+            print(f"[renew-watch] {label} error: {e}")
+
+    return jsonify({'results': results})
 
 
 @app.route('/health', methods=['GET'])

@@ -151,6 +151,14 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  document.getElementById('block-options-close-btn').addEventListener('click', closeBlockOptions);
+  document.getElementById('block-options-overlay').addEventListener('click', closeBlockOptions);
+  document.getElementById('block-sender-btn').addEventListener('click', onBlockSenderChosen);
+  document.getElementById('block-topic-btn').addEventListener('click', onBlockTopicChosen);
+  document.getElementById('topic-block-close-btn').addEventListener('click', closeTopicBlockDrawer);
+  document.getElementById('topic-block-overlay').addEventListener('click', closeTopicBlockDrawer);
+  document.getElementById('topic-block-confirm-btn').addEventListener('click', confirmTopicBlock);
+
   document.getElementById('add-sender-btn').addEventListener('click', addSender);
   document.getElementById('new-sender-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addSender();
@@ -448,14 +456,17 @@ async function removePref(idx) {
 
 async function loadEmailFilters() {
   try {
-    const [filtersRes, blockedRes] = await Promise.all([
+    const [filtersRes, blockedRes, topicsRes] = await Promise.all([
       fetch(`${BACKEND_URL}/email-filters`),
-      fetch(`${BACKEND_URL}/blocked-senders`)
+      fetch(`${BACKEND_URL}/blocked-senders`),
+      fetch(`${BACKEND_URL}/blocked-topics`)
     ]);
     const filtersData = await filtersRes.json();
     const blockedData = await blockedRes.json();
+    const topicsData = await topicsRes.json();
     renderSenders(filtersData.filters || []);
     renderBlockedSenders(blockedData.addresses || []);
+    renderBlockedTopics(topicsData.topics || []);
     await loadCachedEmails(filtersData.filters || []);
     backgroundSync(filtersData.filters || []);
   } catch (err) {
@@ -794,7 +805,8 @@ function buildEmailCard(email, isNew = false) {
 
   buildProposalsSection(card, email);
   wrapper.appendChild(card);
-  addSwipeToDismiss(wrapper, card, email.id, email.sender);
+  const bodyPreview = (email.body || email.snippet || '').slice(0, 300);
+  addSwipeToDismiss(wrapper, card, email.id, email.sender, email.subject || '', bodyPreview);
   return wrapper;
 }
 
@@ -1395,7 +1407,7 @@ async function completeTask(title) {
 
 // ── Swipe to dismiss (emails) ─────────────────────────────────────────────────
 
-function addSwipeToDismiss(wrapper, card, emailId, senderEmail) {
+function addSwipeToDismiss(wrapper, card, emailId, senderEmail, emailSubject, bodyPreview) {
   let startX = 0, startY = 0, deltaX = 0;
   let dragging = false, axisLocked = false, axisIsHorizontal = false;
   const bgEl = wrapper.querySelector('.swipe-email-action-bg');
@@ -1423,7 +1435,7 @@ function addSwipeToDismiss(wrapper, card, emailId, senderEmail) {
     e.preventDefault();
     deltaX = dx;
     if (bgEl) {
-      if (deltaX > 0) { bgEl.textContent = 'Block Sender 🚫'; bgEl.className = 'swipe-email-action-bg swipe-block-bg'; }
+      if (deltaX > 0) { bgEl.textContent = 'Block 🚫'; bgEl.className = 'swipe-email-action-bg swipe-block-bg'; }
       else { bgEl.textContent = 'Dismiss ✕'; bgEl.className = 'swipe-email-action-bg swipe-dismiss-bg'; }
     }
     card.style.transform = `translateX(${deltaX}px)`;
@@ -1440,14 +1452,10 @@ function addSwipeToDismiss(wrapper, card, emailId, senderEmail) {
       card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
       dismissEmail(emailId);
     } else if (deltaX > 80 && senderEmail) {
-      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-      card.style.transform = 'translateX(100%)';
-      card.style.opacity = '0';
-      card.addEventListener('transitionend', () => {
-        wrapper.remove();
-        removeEmailsBySender(senderEmail);
-      }, { once: true });
-      blockSender(senderEmail);
+      card.style.transition = 'transform 0.25s ease';
+      card.style.transform = 'translateX(0)';
+      if (bgEl) { bgEl.textContent = 'Dismiss ✕'; bgEl.className = 'swipe-email-action-bg swipe-dismiss-bg'; }
+      showBlockOptions(wrapper, card, emailId, senderEmail, emailSubject, bodyPreview);
     } else {
       if (bgEl) { bgEl.textContent = 'Dismiss ✕'; bgEl.className = 'swipe-email-action-bg swipe-dismiss-bg'; }
       card.style.transition = 'transform 0.25s ease';
@@ -1477,6 +1485,149 @@ function removeEmailsBySender(senderEmail) {
   document.querySelectorAll('.email-card-wrapper').forEach(wrapper => {
     if (wrapper.dataset.emailSender === senderEmail) wrapper.remove();
   });
+}
+
+// ── Block options sheet ───────────────────────────────────────────────────────
+
+let _blockOptionsContext = null;
+
+function showBlockOptions(wrapper, card, emailId, senderEmail, emailSubject, bodyPreview) {
+  _blockOptionsContext = { wrapper, card, emailId, senderEmail, emailSubject, bodyPreview };
+  document.getElementById('block-options-sender').textContent = senderEmail;
+  document.getElementById('block-options-overlay').classList.remove('hidden');
+  document.getElementById('block-options-sheet').classList.remove('hidden');
+}
+
+function closeBlockOptions() {
+  document.getElementById('block-options-overlay').classList.add('hidden');
+  document.getElementById('block-options-sheet').classList.add('hidden');
+  _blockOptionsContext = null;
+}
+
+async function onBlockSenderChosen() {
+  if (!_blockOptionsContext) return;
+  const { wrapper, card, senderEmail } = _blockOptionsContext;
+  closeBlockOptions();
+  card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+  card.style.transform = 'translateX(100%)';
+  card.style.opacity = '0';
+  card.addEventListener('transitionend', () => {
+    wrapper.remove();
+    removeEmailsBySender(senderEmail);
+  }, { once: true });
+  blockSender(senderEmail);
+}
+
+async function onBlockTopicChosen() {
+  if (!_blockOptionsContext) return;
+  const { senderEmail, emailSubject, bodyPreview } = _blockOptionsContext;
+  closeBlockOptions();
+  showTopicBlockDrawer(senderEmail, emailSubject, bodyPreview);
+}
+
+// ── Topic block drawer ────────────────────────────────────────────────────────
+
+let _topicBlockContext = null;
+
+async function showTopicBlockDrawer(senderEmail, emailSubject, bodyPreview) {
+  _topicBlockContext = { senderEmail, emailSubject, bodyPreview };
+  const input = document.getElementById('topic-block-label-input');
+  input.value = '';
+  input.placeholder = 'Generating label…';
+  document.getElementById('topic-block-confirm-btn').disabled = true;
+  document.getElementById('topic-block-sender-label').textContent = senderEmail;
+  document.getElementById('topic-block-overlay').classList.remove('hidden');
+  document.getElementById('topic-block-drawer').classList.remove('hidden');
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/generate-topic-label`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: emailSubject, body_preview: bodyPreview })
+    });
+    const data = await res.json();
+    input.value = data.label || '';
+    input.placeholder = 'e.g. Home Depot promotional offers';
+  } catch (err) {
+    input.placeholder = 'Enter a label for this type of email';
+    console.error('Failed to generate topic label:', err);
+  }
+  document.getElementById('topic-block-confirm-btn').disabled = false;
+}
+
+function closeTopicBlockDrawer() {
+  document.getElementById('topic-block-overlay').classList.add('hidden');
+  document.getElementById('topic-block-drawer').classList.add('hidden');
+  _topicBlockContext = null;
+}
+
+async function confirmTopicBlock() {
+  if (!_topicBlockContext) return;
+  const { senderEmail, emailSubject, bodyPreview } = _topicBlockContext;
+  const label = document.getElementById('topic-block-label-input').value.trim();
+  if (!label) return;
+
+  const btn = document.getElementById('topic-block-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    await fetch(`${BACKEND_URL}/blocked-topics`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: senderEmail,
+        label,
+        description: label,
+        user: getUserEmail()
+      })
+    });
+    closeTopicBlockDrawer();
+    showToast(`Blocking: "${label}"`);
+    if (_blockOptionsContext) removeEmailsBySender(senderEmail);
+    const topicsRes = await fetch(`${BACKEND_URL}/blocked-topics`);
+    const topicsData = await topicsRes.json();
+    renderBlockedTopics(topicsData.topics || []);
+  } catch (err) {
+    console.error('Failed to save blocked topic:', err);
+    btn.disabled = false;
+    btn.textContent = 'Block this type';
+  }
+}
+
+function renderBlockedTopics(topics) {
+  document.getElementById('badge-topics').textContent = topics.length;
+  const list = document.getElementById('blocked-topics-list');
+  list.innerHTML = '';
+  if (topics.length === 0) {
+    list.innerHTML = '<p class="empty-state" style="padding: 4px 0 8px; font-size: 0.85rem;">No blocked topics yet.</p>';
+    return;
+  }
+  topics.forEach(topic => {
+    const row = document.createElement('div');
+    row.className = 'sender-row blocked-sender-row';
+    row.innerHTML = `
+      <div class="blocked-topic-text">
+        <span class="blocked-topic-label">${escapeHtml(topic.label)}</span>
+        <span class="blocked-topic-sender">${escapeHtml(topic.sender)}</span>
+      </div>
+      <button class="remove-sender-btn">Remove</button>
+    `;
+    row.querySelector('.remove-sender-btn').addEventListener('click', () => removeBlockedTopic(topic.id));
+    list.appendChild(row);
+  });
+}
+
+async function removeBlockedTopic(topicId) {
+  try {
+    const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+    await fetch(`${BACKEND_URL}/blocked-topics/${encodeURIComponent(topicId)}${userParam}`, { method: 'DELETE' });
+    const res = await fetch(`${BACKEND_URL}/blocked-topics`);
+    const data = await res.json();
+    renderBlockedTopics(data.topics || []);
+  } catch (err) {
+    alert(`Failed to remove blocked topic: ${err.message}`);
+  }
 }
 
 async function dismissEmail(emailId) {

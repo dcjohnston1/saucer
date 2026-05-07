@@ -142,6 +142,15 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('chat-btn').addEventListener('click', openChat);
   document.getElementById('chat-overlay').addEventListener('click', closeChat);
   document.getElementById('chat-close-btn').addEventListener('click', closeChat);
+  document.querySelectorAll('.accordion-header').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const body = document.getElementById(btn.dataset.target);
+      const open = !body.classList.contains('hidden');
+      body.classList.toggle('hidden', open);
+      btn.setAttribute('aria-expanded', String(!open));
+    });
+  });
+
   document.getElementById('add-sender-btn').addEventListener('click', addSender);
   document.getElementById('new-sender-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addSender();
@@ -508,6 +517,7 @@ async function backgroundSync(filters) {
 }
 
 function renderSenders(filters) {
+  document.getElementById('badge-permitted').textContent = filters.length;
   const list = document.getElementById('senders-list');
   list.innerHTML = '';
   if (filters.length === 0) {
@@ -554,6 +564,7 @@ async function removeSender(email) {
 }
 
 function renderBlockedSenders(addresses) {
+  document.getElementById('badge-blocked').textContent = addresses.length;
   const list = document.getElementById('blocked-senders-list');
   list.innerHTML = '';
   if (addresses.length === 0) {
@@ -593,6 +604,7 @@ async function loadKeywordFilters() {
 }
 
 function renderKeywords(keywords) {
+  document.getElementById('badge-keywords').textContent = keywords.length;
   const list = document.getElementById('keywords-list');
   list.innerHTML = '';
   if (keywords.length === 0) {
@@ -1933,6 +1945,7 @@ async function loadExcludeKeywordFilters() {
 }
 
 function renderExcludeKeywords(keywords) {
+  document.getElementById('badge-exclude').textContent = keywords.length;
   const list = document.getElementById('exclude-keywords-list');
   list.innerHTML = '';
   if (keywords.length === 0) {

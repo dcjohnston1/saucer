@@ -184,9 +184,8 @@ header h1 {
 
 .header-logo {
   height: 1.6rem;
-  width: 1.6rem;
-  object-fit: contain;
-  mix-blend-mode: multiply;
+  width: auto;
+  flex-shrink: 0;
 }
 
 .tagline {

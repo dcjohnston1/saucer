@@ -122,7 +122,7 @@ def dedup_tasks():
     return len(delete_requests)
 
 
-def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None, assignee=None, source_email_id=None):
+def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recurrence=None, location=None, urgency=None, assignee=None, source_email_id=None, source=None):
     existing = read_doc()
     title_norm = _normalize(title)
     for line in existing.split('\n'):
@@ -147,6 +147,8 @@ def append_to_doc(title, due, added, notes=None, owner=None, priority=None, recu
         line += f" | assignee:{assignee}"
     if source_email_id:
         line += f" | source_email_id:{source_email_id}"
+    if source:
+        line += f" | source:{source}"
     line += "\n"
 
     service = get_service()

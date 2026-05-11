@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Saucer</title>
-  <link rel="stylesheet" href="style.css?v=25.9" />
+  <title>Hana</title>
+  <link rel="stylesheet" href="style.css?v=32.0" />
   <script src="https://accounts.google.com/gsi/client" async onload="initGoogleAuth()"></script>
 </head>
 <body>
@@ -34,7 +34,6 @@
       <div class="drawer-header">Menu</div>
       <ul class="drawer-menu">
         <li class="drawer-item" id="menu-senders">Email Filters</li>
-        <li class="drawer-item" id="menu-proposals">Suggested To-Dos <span id="proposals-badge" class="drawer-badge hidden">0</span></li>
         <li class="drawer-item" id="menu-list">Shared List</li>
         <li class="drawer-item drawer-item--soon">Notifications</li>
         <li class="drawer-item drawer-item--soon">Account</li>
@@ -152,16 +151,6 @@
       </div>
     </div>
 
-    <div id="proposals-screen" class="screen hidden">
-      <div class="screen-header">
-        <button id="proposals-back-btn" class="back-btn">&#8592; Back</button>
-        <span class="screen-title">Suggested To-Dos</span>
-      </div>
-      <div class="screen-body">
-        <div id="proposals-list"></div>
-      </div>
-    </div>
-
     <div id="reviewed-screen" class="screen hidden">
       <div class="screen-header">
         <button id="reviewed-back-btn" class="back-btn">&#8592; Back</button>
@@ -218,7 +207,7 @@
       </div>
       <div id="onboarding-success" class="onboarding-success hidden">
         <div class="onboarding-success-icon">✓</div>
-        <p class="onboarding-success-text">Profile saved! Saucer will use this to personalize your experience.</p>
+        <p class="onboarding-success-text">Profile saved! Hana will use this to personalize your experience.</p>
         <button id="onboarding-done-btn" class="modal-save-btn">Done</button>
       </div>
     </div>
@@ -285,17 +274,15 @@
       <div class="bottom-modal-body" id="task-detail-body"></div>
     </div>
 
-    <!-- Block Options Sheet (right-swipe on email) -->
-    <div id="block-options-overlay" class="modal-overlay hidden"></div>
-    <div id="block-options-sheet" class="bottom-modal hidden">
+    <!-- Source Email Excerpt Drawer -->
+    <div id="email-excerpt-overlay" class="modal-overlay hidden"></div>
+    <div id="email-excerpt-drawer" class="bottom-modal hidden">
       <div class="bottom-modal-header">
-        <span class="bottom-modal-title" id="block-options-sender"></span>
-        <button id="block-options-close-btn" class="modal-close-btn">✕</button>
+        <span class="bottom-modal-title" id="email-excerpt-subject"></span>
+        <button id="email-excerpt-close-btn" class="modal-close-btn">✕</button>
       </div>
-      <div class="bottom-modal-body">
-        <button id="block-sender-btn" class="block-option-btn">Block Sender — hide all emails from this address</button>
-        <button id="block-topic-btn" class="block-option-btn block-option-btn--topic">Block this type — let AI identify the category and block it</button>
-      </div>
+      <div class="email-excerpt-meta" id="email-excerpt-meta"></div>
+      <div class="bottom-modal-body email-excerpt-body" id="email-excerpt-body"></div>
     </div>
 
     <!-- Topic Block Confirmation Drawer -->
@@ -339,7 +326,10 @@
     <div id="briefing-modal" class="briefing-modal hidden">
       <div class="briefing-modal-title">Good morning</div>
       <div class="briefing-modal-body" id="briefing-body"></div>
-      <button id="briefing-dismiss-btn" class="modal-save-btn">Got it</button>
+      <div class="briefing-modal-actions">
+        <button id="briefing-thumbs-up-btn" class="briefing-feedback-btn briefing-feedback-btn--positive">Good summary 👍</button>
+        <button id="briefing-chat-btn" class="briefing-feedback-btn briefing-feedback-btn--chat">Let's chat</button>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>
@@ -366,7 +356,7 @@
 
     <div id="chat-panel">
       <div id="chat-panel-header">
-        <span class="chat-panel-title">Ask Saucer</span>
+        <span class="chat-panel-title">Ask Hana</span>
         <button id="chat-close-btn" aria-label="Close chat">✕</button>
       </div>
       <div id="messages"></div>
@@ -378,6 +368,6 @@
       <div id="model-info"></div>
     </div>
   </div>
-  <script src="app.js?v=21.9"></script>
+  <script src="app.js?v=27.0"></script>
 </body>
 </html>

@@ -8,6 +8,7 @@ let conversationId = crypto.randomUUID();
 let sessionPrevSeenAt = 0;
 let onboardingHistory = [];
 let _currentBriefingId = null;
+let _currentBriefingMessage = '';
 
 const _splashStart = Date.now();
 const _SPLASH_MIN_MS = 2800;
@@ -151,10 +152,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  document.getElementById('block-options-close-btn').addEventListener('click', closeBlockOptions);
-  document.getElementById('block-options-overlay').addEventListener('click', closeBlockOptions);
-  document.getElementById('block-sender-btn').addEventListener('click', onBlockSenderChosen);
-  document.getElementById('block-topic-btn').addEventListener('click', onBlockTopicChosen);
   document.getElementById('topic-block-close-btn').addEventListener('click', closeTopicBlockDrawer);
   document.getElementById('topic-block-overlay').addEventListener('click', closeTopicBlockDrawer);
   document.getElementById('topic-block-confirm-btn').addEventListener('click', confirmTopicBlock);
@@ -186,13 +183,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Senders screen
   document.getElementById('senders-back-btn').addEventListener('click', closeSendersScreen);
-
-  // Proposals screen
-  document.getElementById('menu-proposals').addEventListener('click', () => {
-    closeDrawer();
-    openProposalsScreen();
-  });
-  document.getElementById('proposals-back-btn').addEventListener('click', closeProposalsScreen);
 
   // Members screen
   document.getElementById('menu-members').addEventListener('click', () => {
@@ -273,6 +263,8 @@ window.addEventListener('DOMContentLoaded', () => {
   // Task detail drawer
   document.getElementById('task-detail-close-btn').addEventListener('click', closeTaskDetailDrawer);
   document.getElementById('task-detail-overlay').addEventListener('click', closeTaskDetailDrawer);
+  document.getElementById('email-excerpt-close-btn').addEventListener('click', closeEmailExcerptDrawer);
+  document.getElementById('email-excerpt-overlay').addEventListener('click', closeEmailExcerptDrawer);
 
   // Date picker modal (right-swipe to calendar)
   document.getElementById('date-picker-close-btn').addEventListener('click', closeDatePickerModal);
@@ -280,7 +272,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Morning briefing modal
   document.getElementById('briefing-overlay').addEventListener('click', dismissBriefing);
-  document.getElementById('briefing-dismiss-btn').addEventListener('click', dismissBriefing);
+  document.getElementById('briefing-thumbs-up-btn').addEventListener('click', () => sendBriefingFeedback('positive'));
+  document.getElementById('briefing-chat-btn').addEventListener('click', openBriefingChat);
 
   // Resync button inside Email Filters screen
   document.getElementById('resync-btn').addEventListener('click', () => resyncEmails());
@@ -313,7 +306,6 @@ function showMainApp(user) {
   loadEmailFilters();
   loadKeywordFilters();
   loadExcludeKeywordFilters();
-  loadProposals();
   initVoice();
   initPullToRefresh();
   checkMorningBriefing();
@@ -804,6 +796,19 @@ function buildEmailCard(email, isNew = false) {
   }
 
   buildProposalsSection(card, email);
+
+  const blockOverlay = document.createElement('div');
+  blockOverlay.className = 'email-block-overlay hidden';
+  blockOverlay.innerHTML = `
+    <button class="email-block-opt email-block-opt--sender">Block Sender — hide all emails from this address</button>
+    <button class="email-block-opt email-block-opt--topic">Block this type — let AI identify the category and block it</button>
+    <button class="email-block-cancel">Cancel</button>
+  `;
+  blockOverlay.querySelector('.email-block-opt--sender').addEventListener('click', onBlockSenderChosen);
+  blockOverlay.querySelector('.email-block-opt--topic').addEventListener('click', onBlockTopicChosen);
+  blockOverlay.querySelector('.email-block-cancel').addEventListener('click', closeBlockOptions);
+  card.appendChild(blockOverlay);
+
   wrapper.appendChild(card);
   const bodyPreview = (email.body || email.snippet || '').slice(0, 300);
   addSwipeToDismiss(wrapper, card, email.id, email.sender, email.subject || '', bodyPreview);
@@ -1168,79 +1173,8 @@ async function loadReviewedScreen() {
   }
 }
 
-// ── Proposals ────────────────────────────────────────────────────────────────
-
-function openProposalsScreen() {
-  document.getElementById('proposals-screen').classList.remove('hidden');
-}
-
-function closeProposalsScreen() {
-  document.getElementById('proposals-screen').classList.add('hidden');
-}
-
-async function loadProposals() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/proposals`);
-    const data = await res.json();
-    const proposals = data.proposals || [];
-
-    const badge = document.getElementById('proposals-badge');
-    if (proposals.length > 0) {
-      badge.textContent = proposals.length;
-      badge.classList.remove('hidden');
-    } else {
-      badge.classList.add('hidden');
-    }
-
-    const list = document.getElementById('proposals-list');
-    if (!list) return;
-    list.innerHTML = '';
-
-    if (proposals.length === 0) {
-      list.innerHTML = '<div class="empty-state">No suggestions right now.</div>';
-      return;
-    }
-
-    proposals.forEach(p => {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'proposal-card-wrapper';
-
-      const bg = document.createElement('div');
-      bg.className = 'swipe-assign-bg';
-      ALLOWED_EMAILS.forEach(email => {
-        const btn = document.createElement('div');
-        btn.className = 'assign-avatar';
-        btn.dataset.email = email;
-        btn.textContent = email[0].toUpperCase();
-        bg.appendChild(btn);
-      });
-      const bothBtn = document.createElement('div');
-      bothBtn.className = 'assign-avatar assign-avatar--both';
-      bothBtn.dataset.email = 'both';
-      bothBtn.innerHTML = `<span>${ALLOWED_EMAILS[0][0].toUpperCase()}</span><span>${ALLOWED_EMAILS[1][0].toUpperCase()}</span>`;
-      bg.appendChild(bothBtn);
-
-      const card = document.createElement('div');
-      card.className = 'proposal-card';
-      card.innerHTML = `
-        <div class="proposal-source">${escapeHtml(p.email_sender)} &mdash; ${escapeHtml(p.email_subject)}</div>
-        <div class="proposal-title">💡 ${escapeHtml(p.title)}</div>
-        ${p.notes ? `<div class="proposal-notes">${escapeHtml(p.notes)}</div>` : ''}
-        <div class="proposal-actions">
-          <button class="proposal-dismiss-btn">Dismiss</button>
-        </div>
-      `;
-      card.querySelector('.proposal-dismiss-btn').addEventListener('click', () => dismissProposal(p.id, wrapper));
-
-      wrapper.appendChild(bg);
-      wrapper.appendChild(card);
-      addSwipeToAssign(wrapper, card, p.id);
-      list.appendChild(wrapper);
-    });
-  } catch (err) {
-    console.error('Failed to load proposals:', err);
-  }
-}
+// NOTE: Proposals screen removed in Hana sprint (Task 5). Inline proposal rows on email
+// cards and the proposals endpoints are deprecated; to be removed in the next sprint.
 
 // ── Shared List ───────────────────────────────────────────────────────────────
 
@@ -1307,7 +1241,7 @@ async function loadListScreen() {
       tasks.forEach(task => {
         const wrapper = document.createElement('div');
         wrapper.className = 'task-card-wrapper';
-        wrapper.innerHTML = '<div class="swipe-add-cal-bg">📅 Calendar</div><div class="swipe-done-bg">Done ✓</div>';
+        wrapper.innerHTML = '<div class="swipe-task-action-bg"></div>';
 
         const card = document.createElement('div');
         card.className = 'task-card';
@@ -1317,12 +1251,16 @@ async function loadListScreen() {
           : task.assignee && task.assignee !== 'none'
             ? `<div class="task-assignee task-assignee--${task.assignee[0].toLowerCase()}">${task.assignee[0].toUpperCase()}</div>`
             : '';
+        const aiSourceHtml = task.source === 'ai-suggested'
+          ? '<div class="task-ai-source">Hana noticed this</div>'
+          : '';
         card.innerHTML = `
           <div class="task-main">
             <div class="task-title">${escapeHtml(task.title)}</div>
             <div class="task-meta-right">${dateHtml}${assigneeHtml}</div>
           </div>
           ${task.notes ? `<div class="task-notes">${escapeHtml(task.notes)}</div>` : ''}
+          ${aiSourceHtml}
         `;
 
         wrapper.appendChild(card);
@@ -1340,6 +1278,7 @@ async function loadListScreen() {
 function addSwipeToComplete(wrapper, card, title, task) {
   let startX = 0, startY = 0, deltaX = 0;
   let dragging = false, didSwipe = false, axisLocked = false, axisIsHorizontal = false;
+  const bgEl = wrapper.querySelector('.swipe-task-action-bg');
 
   card.addEventListener('touchstart', (e) => {
     startX = e.touches[0].clientX;
@@ -1348,6 +1287,7 @@ function addSwipeToComplete(wrapper, card, title, task) {
     didSwipe = false;
     axisLocked = false;
     axisIsHorizontal = false;
+    deltaX = 0;
     card.style.transition = 'none';
   }, { passive: true });
 
@@ -1365,22 +1305,35 @@ function addSwipeToComplete(wrapper, card, title, task) {
     deltaX = dx;
     if (Math.abs(deltaX) > 10) didSwipe = true;
     card.style.transform = `translateX(${deltaX}px)`;
+    if (bgEl) {
+      if (deltaX < 0) {
+        bgEl.textContent = '📅 Add to Calendar';
+        bgEl.className = 'swipe-task-action-bg action-cal';
+      } else {
+        bgEl.textContent = 'Done ✓';
+        bgEl.className = 'swipe-task-action-bg action-done';
+      }
+    }
   }, { passive: false });
 
   card.addEventListener('touchend', () => {
     if (!dragging) return;
     dragging = false;
-    if (deltaX < -80) {
+    if (deltaX < -80 && task) {
+      // Left swipe = Add to Calendar
+      addTaskToCalendar(task, card, wrapper);
+    } else if (deltaX > 80) {
+      // Right swipe = Done
       card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-      card.style.transform = 'translateX(-100%)';
+      card.style.transform = 'translateX(100%)';
       card.style.opacity = '0';
       card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
       completeTask(title);
-    } else if (deltaX > 80 && task) {
-      addTaskToCalendar(task, card, wrapper);
     } else {
+      // Partial swipe — snap back
       card.style.transition = 'transform 0.25s ease';
       card.style.transform = 'translateX(0)';
+      if (bgEl) bgEl.textContent = '';
     }
     deltaX = 0;
   });
@@ -1493,14 +1446,15 @@ let _blockOptionsContext = null;
 
 function showBlockOptions(wrapper, card, emailId, senderEmail, emailSubject, bodyPreview) {
   _blockOptionsContext = { wrapper, card, emailId, senderEmail, emailSubject, bodyPreview };
-  document.getElementById('block-options-sender').textContent = senderEmail;
-  document.getElementById('block-options-overlay').classList.remove('hidden');
-  document.getElementById('block-options-sheet').classList.remove('hidden');
+  const overlay = card.querySelector('.email-block-overlay');
+  if (overlay) overlay.classList.remove('hidden');
 }
 
 function closeBlockOptions() {
-  document.getElementById('block-options-overlay').classList.add('hidden');
-  document.getElementById('block-options-sheet').classList.add('hidden');
+  if (_blockOptionsContext) {
+    const overlay = _blockOptionsContext.card.querySelector('.email-block-overlay');
+    if (overlay) overlay.classList.add('hidden');
+  }
   _blockOptionsContext = null;
 }
 
@@ -1712,7 +1666,6 @@ async function acceptProposalWithAssignee(proposalId, assigneeEmail) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignee: assigneeEmail, user: getUserEmail() })
     });
-    loadProposals();
   } catch (err) {
     console.error('Failed to accept proposal:', err);
   }
@@ -1723,7 +1676,6 @@ async function dismissProposal(proposalId, wrapperEl) {
   try {
     const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
     await fetch(`${BACKEND_URL}/proposals/${proposalId}${userParam}`, { method: 'DELETE' });
-    loadProposals();
   } catch (err) {
     console.error('Failed to dismiss proposal:', err);
   }
@@ -2364,19 +2316,20 @@ function openTaskDetailDrawer(task) {
 
 async function _loadTaskSourceEmail(emailId) {
   try {
-    const res = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}`);
+    const res = await fetch(`${BACKEND_URL}/email/${encodeURIComponent(emailId)}/excerpt`);
     const data = await res.json();
     const placeholder = document.getElementById('task-source-placeholder');
     if (!placeholder) return;
-    if (data.email) {
-      const e = data.email;
+    if (!data.error) {
       placeholder.innerHTML = `
         <span class="task-source-icon">✉️</span>
         <span class="task-source-info">
-          <span class="task-source-subject">${escapeHtml(e.subject || '(No Subject)')}</span>
-          <span class="task-source-sender">${escapeHtml(e.sender)} · ${escapeHtml(formatEmailDate(e.date))}</span>
+          <span class="task-source-subject">${escapeHtml(data.subject || '(No Subject)')}</span>
+          <span class="task-source-sender">${escapeHtml(data.sender)} · ${escapeHtml(formatEmailDate(data.date))}</span>
         </span>
       `;
+      placeholder.style.cursor = 'pointer';
+      placeholder.addEventListener('click', () => openEmailExcerptDrawer(data));
     } else {
       placeholder.remove();
     }
@@ -2386,12 +2339,26 @@ async function _loadTaskSourceEmail(emailId) {
   }
 }
 
+function openEmailExcerptDrawer(email) {
+  document.getElementById('email-excerpt-subject').textContent = email.subject || '(No Subject)';
+  document.getElementById('email-excerpt-meta').textContent =
+    `${email.sender}  ·  ${formatEmailDate(email.date)}`;
+  document.getElementById('email-excerpt-body').textContent = email.body || '(No body)';
+  document.getElementById('email-excerpt-overlay').classList.remove('hidden');
+  document.getElementById('email-excerpt-drawer').classList.remove('hidden');
+}
+
+function closeEmailExcerptDrawer() {
+  document.getElementById('email-excerpt-overlay').classList.add('hidden');
+  document.getElementById('email-excerpt-drawer').classList.add('hidden');
+}
+
 function closeTaskDetailDrawer() {
   document.getElementById('task-detail-overlay').classList.add('hidden');
   document.getElementById('task-detail-drawer').classList.add('hidden');
 }
 
-// ── Right-swipe task → Add to Calendar ───────────────────────────────────────
+// ── Left-swipe task → Add to Calendar ────────────────────────────────────────
 
 let _pendingCalendarTask = null;
 let _pendingCalendarCard = null;
@@ -2418,7 +2385,7 @@ async function _doAddTaskToCalendar(title, dateStr, card, wrapper) {
       showToast('Added to calendar ✓');
       if (card && wrapper) {
         card.style.transition = 'transform 0.35s ease, opacity 0.35s ease';
-        card.style.transform = 'translateX(100%)';
+        card.style.transform = 'translateX(-100%)';
         card.style.opacity = '0';
         card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
       }
@@ -2479,23 +2446,65 @@ async function checkMorningBriefing() {
 
 function showBriefingModal(briefing) {
   _currentBriefingId = briefing.id;
-  document.getElementById('briefing-body').textContent = briefing.message;
+  _currentBriefingMessage = briefing.message || '';
+  document.getElementById('briefing-body').textContent = _currentBriefingMessage;
   document.getElementById('briefing-overlay').classList.remove('hidden');
   document.getElementById('briefing-modal').classList.remove('hidden');
 }
 
-async function dismissBriefing() {
+function _closeBriefingModal() {
   document.getElementById('briefing-overlay').classList.add('hidden');
   document.getElementById('briefing-modal').classList.add('hidden');
-  if (_currentBriefingId && currentUser) {
-    const id = _currentBriefingId;
-    _currentBriefingId = null;
+}
+
+async function _markBriefingSeen(briefingId) {
+  if (!briefingId || !currentUser) return;
+  try {
+    await fetch(`${BACKEND_URL}/briefing/${briefingId}/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_email: currentUser.email }),
+    });
+  } catch {}
+}
+
+async function dismissBriefing() {
+  const id = _currentBriefingId;
+  _currentBriefingId = null;
+  _closeBriefingModal();
+  await _markBriefingSeen(id);
+}
+
+async function sendBriefingFeedback(rating) {
+  const id = _currentBriefingId;
+  _currentBriefingId = null;
+  _closeBriefingModal();
+  if (id && currentUser) {
     try {
-      await fetch(`${BACKEND_URL}/briefing/${id}/seen`, {
+      await fetch(`${BACKEND_URL}/briefing/${id}/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_email: currentUser.email }),
+        body: JSON.stringify({ rating, user_email: currentUser.email }),
       });
     } catch {}
   }
+}
+
+function openBriefingChat() {
+  const id = _currentBriefingId;
+  const message = _currentBriefingMessage;
+  _currentBriefingId = null;
+  _closeBriefingModal();
+  _markBriefingSeen(id);
+  // Open chat panel with briefing pre-loaded as context
+  openChat();
+  setTimeout(() => {
+    const input = document.getElementById('chat-input');
+    if (input && message) {
+      const prelude = `Morning briefing context: "${message.slice(0, 300)}${message.length > 300 ? '…' : ''}" — `;
+      input.value = prelude;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }, 300);
 }

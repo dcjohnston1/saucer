@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -12,6 +13,38 @@ CORS(app)
 
 def get_db():
     return firestore.Client(project='mediationmate')
+
+
+def _extract_sender_addr(sender_str: str) -> str:
+    """Return the bare email address from a From: header, lowercased."""
+    m = re.search(r'<([^>]+)>', sender_str)
+    return m.group(1).lower() if m else sender_str.lower()
+
+
+def _record_deleted_task(title: str):
+    """Append a task title to saucer-deleted-tasks.json and expire entries older than 30 days."""
+    from gcs import read_json, write_json
+    from datetime import datetime, timedelta, timezone
+    entries = read_json('saucer-deleted-tasks.json', [])
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    entries = [e for e in entries if datetime.fromisoformat(e['deleted_at']) > cutoff]
+    norm = title.strip().lower()
+    if not any(e['title'] == norm for e in entries):
+        entries.append({'title': norm, 'deleted_at': datetime.now(timezone.utc).isoformat()})
+    write_json('saucer-deleted-tasks.json', entries)
+
+
+def _is_task_deleted(title: str) -> bool:
+    """Return True if this title is in saucer-deleted-tasks.json (not yet expired)."""
+    from gcs import read_json
+    from datetime import datetime, timedelta, timezone
+    entries = read_json('saucer-deleted-tasks.json', [])
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    norm = title.strip().lower()
+    return any(
+        e['title'] == norm and datetime.fromisoformat(e['deleted_at']) > cutoff
+        for e in entries
+    )
 
 
 def _req_user(data=None):
@@ -99,6 +132,7 @@ def get_doc():
             'notes': None,
             'assignee': None,
             'source_email_id': None,
+            'source': None,
         }
 
         for part in parts[2:]:
@@ -122,6 +156,8 @@ def get_doc():
                 task['assignee'] = part[9:]
             elif part.startswith('source_email_id:'):
                 task['source_email_id'] = part[16:]
+            elif part.startswith('source:'):
+                task['source'] = part[7:]
 
         tasks.append(task)
 
@@ -162,6 +198,14 @@ def get_emails():
     new_ids = {e['id'] for e in new_emails}
     merged = new_emails + [e for e in stored if e['id'] not in new_ids]
 
+    # Apply 60-day TTL: drop dismissed emails older than 60 days
+    dismissed_set = set(read_json('saucer-dismissed.json', []))
+    ttl_cutoff = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    merged = [
+        e for e in merged
+        if e['id'] not in dismissed_set or (e.get('date') or '') >= ttl_cutoff
+    ]
+
     write_json('saucer-emails.json', merged)
 
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
@@ -200,9 +244,10 @@ def get_emails():
         print(f"[/emails] exclude filter: {before_count} -> {len(visible)} emails")
 
     blocked_doc = db.collection('settings').document('blocked_senders').get()
-    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+    blocked_senders = {a.lower() for a in blocked_doc.to_dict().get('addresses', [])} if blocked_doc.exists else set()
     if blocked_senders:
-        visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
+        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_senders
+                   and e.get('sender', '').lower() not in blocked_senders]
 
     blocked_topics_by_sender = _load_blocked_topics_by_sender(db)
     if blocked_topics_by_sender:
@@ -270,9 +315,10 @@ def get_cached_emails():
         visible = [e for e in visible if not _matches_exclude_cached(e)]
 
     blocked_doc = db.collection('settings').document('blocked_senders').get()
-    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+    blocked_senders = {a.lower() for a in blocked_doc.to_dict().get('addresses', [])} if blocked_doc.exists else set()
     if blocked_senders:
-        visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
+        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_senders
+                   and e.get('sender', '').lower() not in blocked_senders]
 
     proposals = read_json('saucer-proposals.json', {})
     for e in visible:
@@ -331,9 +377,10 @@ def resync_emails():
         visible = [e for e in visible if not _matches_exclude_resync(e)]
 
     blocked_doc = db.collection('settings').document('blocked_senders').get()
-    blocked_senders = set(blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else [])
+    blocked_senders = {a.lower() for a in blocked_doc.to_dict().get('addresses', [])} if blocked_doc.exists else set()
     if blocked_senders:
-        visible = [e for e in visible if e.get('sender', '') not in blocked_senders]
+        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_senders
+                   and e.get('sender', '').lower() not in blocked_senders]
 
     proposals_data = read_json('saucer-proposals.json', {})
     for e in visible:
@@ -343,6 +390,8 @@ def resync_emails():
     return jsonify({'emails': visible, 'synced': len(new_emails)})
 
 
+# DEPRECATED: proposals flow replaced by direct Google Doc writes with source:ai-suggested
+# TODO: remove in next sprint once inline email proposals are also removed from frontend
 @app.route('/proposals', methods=['GET'])
 def get_proposals():
     from gcs import read_json
@@ -368,6 +417,7 @@ def get_proposals():
     return jsonify({'proposals': active})
 
 
+# DEPRECATED: see /proposals GET above
 @app.route('/proposals/<proposal_id>/accept', methods=['POST'])
 def accept_proposal(proposal_id):
     from gcs import read_json, write_json
@@ -422,6 +472,7 @@ def accept_proposal(proposal_id):
     return jsonify({'error': 'Proposal not found'}), 404
 
 
+# DEPRECATED: see /proposals GET above
 @app.route('/proposals/<proposal_id>', methods=['DELETE'])
 def dismiss_proposal(proposal_id):
     from gcs import read_json, write_json
@@ -482,6 +533,7 @@ def complete_task():
         return jsonify({'error': 'Missing title'}), 400
     from gdocs import complete_task as gdocs_complete_task
     gdocs_complete_task(title)
+    _record_deleted_task(title)
     user = _req_user(data)
     log_action(user, 'task_completed', {'title': title}, actor='user')
     return jsonify({'ok': True})
@@ -1026,6 +1078,40 @@ def get_latest_briefing():
     })
 
 
+@app.route('/briefing/<briefing_id>/feedback', methods=['POST'])
+def briefing_feedback(briefing_id):
+    from datetime import datetime, timezone
+    data = request.get_json(force=True) or {}
+    user_email = data.get('user_email', '')
+    rating = data.get('rating', '')
+    if not user_email or rating not in ('positive', 'negative'):
+        return jsonify({'error': 'Missing or invalid user_email / rating'}), 400
+
+    is_dan = user_email == 'dcjohnston1@gmail.com'
+    rating_field = 'dan_rating' if is_dan else 'emily_rating'
+    seen_field = 'dan_seen' if is_dan else 'emily_seen'
+
+    db = get_db()
+    briefing_ref = db.collection('morning_briefings').document(briefing_id)
+    briefing_ref.update({rating_field: rating, seen_field: True})
+
+    # Link rating to any Gemini decisions made in this briefing
+    briefing_doc = briefing_ref.get()
+    if briefing_doc.exists:
+        decision_ids = briefing_doc.to_dict().get('decisions_made', [])
+        for dec_id in decision_ids:
+            try:
+                db.collection('gemini_decisions').document(dec_id).update({
+                    'user_feedback': rating,
+                    'feedback_at': datetime.now(timezone.utc),
+                    'feedback_by': user_email,
+                })
+            except Exception as e:
+                print(f"[briefing_feedback] decision update failed {dec_id}: {e}")
+
+    return jsonify({'ok': True})
+
+
 @app.route('/briefing/<briefing_id>/seen', methods=['POST'])
 def mark_briefing_seen(briefing_id):
     data = request.get_json(force=True) or {}
@@ -1062,6 +1148,10 @@ def agent_email_trigger():
     new_history_id = str(payload.get('historyId', ''))
     print(f"[email-trigger] account={email_address} historyId={new_history_id}")
 
+    from gcs import read_json as _gcs_read
+    _cfg_snapshot = _gcs_read('saucer-config.json', {})
+    print(f"[email-trigger] saucer-config.json at entry: {_cfg_snapshot}")
+
     if not new_history_id:
         return jsonify({'ok': True})
 
@@ -1079,15 +1169,44 @@ def agent_email_trigger():
         return jsonify({'ok': True})
 
     from gcs import read_json, write_json
+    from datetime import datetime, timezone
     config = read_json('saucer-config.json', {})
     last_history_id = config.get(history_key)
 
     # First notification — store baseline and exit; nothing to diff yet
     if not last_history_id:
         config[history_key] = new_history_id
+        config['last_watch_established'] = datetime.now(timezone.utc).isoformat()
         write_json('saucer-config.json', config)
         print(f"[email-trigger] initialized {history_key}={new_history_id}")
         return jsonify({'ok': True})
+
+    # Proactive re-watch if the Gmail watch is older than 7 days (watches expire after 7 days)
+    last_watch_str = config.get('last_watch_established')
+    if last_watch_str:
+        try:
+            last_watch_dt = datetime.fromisoformat(last_watch_str)
+            if last_watch_dt.tzinfo is None:
+                last_watch_dt = last_watch_dt.replace(tzinfo=timezone.utc)
+            watch_age_days = (datetime.now(timezone.utc) - last_watch_dt).days
+            if watch_age_days >= 7:
+                print(f"[email-trigger] watch is {watch_age_days} days old — proactively re-watching")
+                from gmail_scanner import _build_service, setup_gmail_watch
+                _svc = _build_service(refresh_token_key)
+                if _svc:
+                    try:
+                        _resp = setup_gmail_watch(_svc, 'projects/mediationmate/topics/saucer-gmail-push')
+                        fresh_id = str(_resp.get('historyId', ''))
+                        if fresh_id:
+                            config[history_key] = fresh_id
+                        config['last_watch_established'] = datetime.now(timezone.utc).isoformat()
+                        write_json('saucer-config.json', config)
+                        print(f"[email-trigger] proactive re-watch done historyId={fresh_id}")
+                        return jsonify({'ok': True})
+                    except Exception as _e:
+                        print(f"[email-trigger] proactive re-watch error: {_e}")
+        except Exception as _pe:
+            print(f"[email-trigger] could not parse last_watch_established: {_pe}")
 
     # Advance the stored historyId immediately for idempotency on Pub/Sub retries
     config[history_key] = new_history_id
@@ -1128,6 +1247,7 @@ def agent_email_trigger():
     fresh = [e for e in new_emails if e['id'] not in existing_ids]
     if fresh:
         write_json('saucer-emails.json', fresh + stored)
+    print(f"[email-trigger] merged {len(fresh)} new emails into saucer-emails.json, total now {len(fresh) + len(stored)}")
 
     # Load filters from Firestore
     db = get_db()
@@ -1146,8 +1266,11 @@ def agent_email_trigger():
     blocked_topics_by_sender = _load_blocked_topics_by_sender(db)
 
     def _sender_matches(sender_str):
-        s = sender_str.lower()
-        return any(f in s for f in sender_filters)
+        raw = sender_str.lower()
+        addr = _extract_sender_addr(sender_str)
+        matched = any(f in raw or f in addr for f in sender_filters)
+        print(f"[email-trigger] _sender_matches raw={raw!r} addr={addr!r} filters={sender_filters} -> {matched}")
+        return matched
 
     def _keyword_matches(email_dict):
         haystack = ' '.join([
@@ -1157,8 +1280,12 @@ def agent_email_trigger():
         return any(kw in haystack for kw in keyword_filters)
 
     def _is_excluded(email_dict):
-        sender_str = email_dict.get('sender', '').lower()
-        if any(b in sender_str for b in blocked_senders):
+        sender_str = email_dict.get('sender', '')
+        addr = _extract_sender_addr(sender_str)
+        raw = sender_str.lower()
+        blocked_lower = {b.lower() for b in blocked_senders}
+        print(f"[email-trigger] _is_excluded check addr={addr!r} blocked_lower={blocked_lower}")
+        if any(b in raw or b in addr for b in blocked_lower):
             return True
         if exclude_keywords:
             haystack = ' '.join([
@@ -1221,8 +1348,10 @@ def renew_gmail_watch():
             resp = setup_gmail_watch(svc, topic)
             history_id = str(resp.get('historyId', ''))
             if history_id:
+                from datetime import datetime, timezone
                 config = read_json('saucer-config.json', {})
                 config[history_key] = history_id
+                config['last_watch_established'] = datetime.now(timezone.utc).isoformat()
                 write_json('saucer-config.json', config)
             results[label] = {'historyId': history_id, 'expiration': resp.get('expiration')}
             print(f"[renew-watch] {label}: historyId={history_id} expiration={resp.get('expiration')}")
@@ -1231,6 +1360,56 @@ def renew_gmail_watch():
             print(f"[renew-watch] {label} error: {e}")
 
     return jsonify({'results': results})
+
+
+@app.route('/session/checkpoint', methods=['GET'])
+def get_session_checkpoint():
+    from gcs import read_json
+    checkpoint = read_json('saucer-session-checkpoint.json', None)
+    return jsonify({'checkpoint': checkpoint})
+
+
+@app.route('/session/checkpoint', methods=['POST'])
+def save_session_checkpoint():
+    from gcs import write_json
+    from datetime import datetime, timezone
+    data = request.get_json() or {}
+    content = data.get('content', '')
+    if not content:
+        return jsonify({'error': 'Missing content'}), 400
+    checkpoint = {
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'content': content,
+    }
+    write_json('saucer-session-checkpoint.json', checkpoint)
+    return jsonify({'ok': True, 'timestamp': checkpoint['timestamp']})
+
+
+@app.route('/email/<path:email_id>/excerpt', methods=['GET'])
+def get_email_excerpt(email_id):
+    from gcs import read_json
+    emails = read_json('saucer-emails.json', [])
+    for e in emails:
+        if e['id'] == email_id:
+            body = (e.get('body') or e.get('snippet') or '')[:2000]
+            return jsonify({
+                'subject': e.get('subject', ''),
+                'sender': e.get('sender', ''),
+                'date': e.get('date', ''),
+                'body': body,
+            })
+    return jsonify({'error': 'Not found'}), 404
+
+
+@app.route('/debug/config', methods=['GET'])
+def debug_config():
+    agent_key = os.environ.get('AGENT_KEY', '')
+    provided_key = request.headers.get('X-Agent-Key', '')
+    if not agent_key or provided_key != agent_key:
+        return jsonify({'error': 'Unauthorized'}), 401
+    from gcs import read_json
+    config = read_json('saucer-config.json', {})
+    return jsonify({'config': config})
 
 
 @app.route('/health', methods=['GET'])

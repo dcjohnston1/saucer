@@ -55,7 +55,22 @@ def _tz():
     return ZoneInfo("America/Los_Angeles")
 
 
-AGENT_SYSTEM_PROMPT = """You are Saucer running your morning review. No user is present. Your job:
+SINGLE_EMAIL_SYSTEM_PROMPT = """You are Hana. A new email just arrived. No user is present. Your job:
+
+1. Read the email and extract any actionable tasks or important dates.
+2. If there are tasks: assign each to Dan or Emily based on their roles, workload, and calendar. Always log your reasoning.
+3. If the email is clearly noise (promotional, newsletter with no action items, receipt with no follow-up): call dismiss_email.
+4. Always call write_briefing at the end — 2-3 sentences per person summarizing what you found and what you decided.
+
+Apply the same assignment rules as the morning review:
+- Consult HOUSEHOLD MEMBER CONTEXT for each person's stated roles.
+- Consult TASK LOAD SUMMARY to balance workload.
+- Consult CALENDAR for upcoming commitments.
+- Always populate the reasoning field with specifics.
+
+BRIEFING: Tell each person what's relevant to them. Start with the main point. Sign off warmly."""
+
+AGENT_SYSTEM_PROMPT = """You are Hana running your morning review. No user is present. Your job:
 
 1. Review overnight emails and extract any actionable tasks or important dates.
 2. Assign each task to Dan or Emily based on their roles, current workload, and calendar. Always log reasoning.
@@ -213,11 +228,26 @@ def _make_agent_add_todo(agent_state: dict, context_available: str):
             source_email_id: ID of the source email if this task came from an email.
             reasoning: Why this task is being added and why assigned to that person. Always provide this.
         """
+        # Check deleted-tasks list before calling add_todo
+        _deleted = read_json('saucer-deleted-tasks.json', [])
+        from datetime import timedelta, timezone as _tz_agent
+        _cutoff_a = datetime.now(_tz_agent.utc) - timedelta(days=30)
+        _norm_a = title.strip().lower()
+        if any(
+            e['title'] == _norm_a
+            and datetime.fromisoformat(e['deleted_at']) > _cutoff_a
+            for e in _deleted
+        ):
+            print(f"[agent] skipping re-add of deleted task: {title!r}")
+            return {'status': 'skipped', 'reason': 'recently_deleted'}
+
         result = add_todo(
             title=title, date_expression=date_expression, notes=notes,
             owner=owner, priority=priority, recurrence=recurrence,
-            location=location, urgency=urgency, assignee=assignee,
+            location=location, urgency=urgency,
+            assignee=assignee if assignee else 'unassigned',
             source_email_id=source_email_id,
+            source='ai-suggested',
         )
         if result.get('status') == 'ok':
             agent_state['tasks_added'] += 1
@@ -315,6 +345,72 @@ def _make_write_briefing(db, agent_state: dict, overnight_emails: list):
         )
         return {'status': 'ok', 'briefing_id': briefing_id}
     return write_briefing
+
+
+def process_single_email(email: dict) -> str:
+    """Process one qualifying inbound email and write/update the briefing.
+
+    Called from the Pub/Sub webhook handler in a background thread.
+    Returns the briefing_id written to Firestore (or 'no-briefing-written').
+    """
+    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+    db = _firestore.Client(project=_PROJECT)
+
+    from gdocs import read_doc
+    doc_contents = read_doc()
+    today = datetime.now(_tz())
+
+    user_context = _load_user_context()
+    household_profile = _load_household_profile(_DAN)
+    task_load = _parse_task_load(doc_contents)
+    calendar_ctx = _load_calendar_context(today)
+    gemini_decisions_ctx = _load_recent_gemini_decisions(_DAN)
+
+    context_available = (
+        'task list, user roles and preferences, household profile, '
+        'per-user task counts, calendar events (next 7 days)'
+    )
+
+    date_line = f"TODAY: {today.strftime('%A, %B %-d, %Y')}"
+    email_block = _format_emails_for_agent([email])
+
+    full_system = SINGLE_EMAIL_SYSTEM_PROMPT + f"\n\n{date_line}"
+    if user_context:
+        full_system += f"\n\n{user_context}"
+    if household_profile:
+        full_system += f"\n\n{household_profile}"
+    full_system += f"\n\n{task_load}"
+    if calendar_ctx:
+        full_system += f"\n\n{calendar_ctx}"
+    if gemini_decisions_ctx:
+        full_system += f"\n\n{gemini_decisions_ctx}"
+    full_system += f"\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
+    full_system += f"\n\nINBOUND EMAIL:\n{email_block}"
+
+    agent_state = {
+        'briefing_id': None,
+        'tasks_added': 0,
+        'emails_dismissed': 0,
+        'decision_ids': [],
+    }
+
+    add_todo_tool = _make_agent_add_todo(agent_state, context_available)
+    reassign_tool = _make_agent_reassign(agent_state, context_available)
+    dismiss_tool = _make_agent_dismiss_email(agent_state)
+    write_briefing_tool = _make_write_briefing(db, agent_state, [email])
+
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-flash',
+        system_instruction=full_system,
+        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool],
+    )
+
+    chat = model.start_chat(enable_automatic_function_calling=True)
+    chat.send_message("Process this email.")
+
+    briefing_id = agent_state.get('briefing_id') or 'no-briefing-written'
+    print(f"[agent] process_single_email done. subject='{email.get('subject')}' briefing_id={briefing_id}")
+    return briefing_id
 
 
 def run_morning_agent() -> str:

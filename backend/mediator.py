@@ -119,7 +119,7 @@ def _human_readable(status, value):
 def add_todo(title: str, date_expression: str = None, notes: str = None,
              owner: str = None, priority: str = None, recurrence: str = None,
              location: str = None, urgency: str = None, assignee: str = None,
-             source_email_id: str = None):
+             source_email_id: str = None, source: str = None):
     """Add a to-do item to the shared household Google Doc.
 
     Args:
@@ -132,6 +132,30 @@ def add_todo(title: str, date_expression: str = None, notes: str = None,
         location: Where this task takes place, if relevant.
         urgency: Notes on urgency or timing flexibility.
     """
+    # Guard: skip if this title was recently deleted by a user
+    deleted_entries = read_json('saucer-deleted-tasks.json', [])
+    from datetime import timedelta, timezone as _tz2
+    _cutoff = datetime.now(_tz2.utc) - timedelta(days=30)
+    _norm_title = title.strip().lower()
+    if any(
+        e['title'] == _norm_title
+        and datetime.fromisoformat(e['deleted_at']) > _cutoff
+        for e in deleted_entries
+    ):
+        print(f"[add_todo] skipping re-add of deleted task: {title!r}")
+        return {'status': 'skipped', 'reason': 'recently_deleted'}
+
+    # Guard: skip if this title already exists in the Google Doc
+    _doc = read_doc()
+    _existing = set()
+    for _line in _doc.split('\n'):
+        _parts = [p.strip() for p in _line.split('|')]
+        if len(_parts) > 1 and _line.strip():
+            _existing.add(_parts[1].strip().lower())
+    if _norm_title in _existing:
+        print(f"[add_todo] skipping duplicate task already in doc: {title!r}")
+        return {'status': 'skipped', 'reason': 'already_exists'}
+
     status, value = resolve_date(date_expression)
     today = _today()
 
@@ -144,7 +168,7 @@ def add_todo(title: str, date_expression: str = None, notes: str = None,
     else:
         added = today.strftime("%Y-%m-%d")
         due = value if status in ("date", "range") else "none"
-        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency, assignee, source_email_id=source_email_id)
+        append_to_doc(title, due, added, notes, owner, priority, recurrence, location, urgency, assignee, source_email_id=source_email_id, source=source)
         human = _human_readable(status, value)
         return {
             "status": "ok",

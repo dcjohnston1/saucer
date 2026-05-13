@@ -26,3 +26,46 @@ def write_json(filename, data):
         blob.upload_from_string(json.dumps(data), content_type='application/json')
     except Exception as e:
         print(f"GCS write error ({filename}): {e}")
+
+
+def upload_file(file_bytes: bytes, gcs_path: str, content_type: str = 'application/octet-stream') -> bool:
+    try:
+        blob = _bucket().blob(gcs_path)
+        blob.upload_from_string(file_bytes, content_type=content_type)
+        return True
+    except Exception as e:
+        print(f"GCS upload error ({gcs_path}): {e}")
+        return False
+
+
+def delete_file(gcs_path: str) -> bool:
+    try:
+        blob = _bucket().blob(gcs_path)
+        blob.delete()
+        return True
+    except Exception as e:
+        print(f"GCS delete error ({gcs_path}): {e}")
+        return False
+
+
+def generate_signed_url(gcs_path: str, expiry_minutes: int = 15):
+    """Generate a V4 signed URL using workload identity credentials (Cloud Run compatible)."""
+    try:
+        import datetime
+        import google.auth
+        from google.auth.transport import requests as _req
+        creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+        if hasattr(creds, 'refresh'):
+            creds.refresh(_req.Request())
+        blob = _bucket().blob(gcs_path)
+        url = blob.generate_signed_url(
+            version='v4',
+            expiration=datetime.timedelta(minutes=expiry_minutes),
+            method='GET',
+            service_account_email=getattr(creds, 'service_account_email', None),
+            access_token=getattr(creds, 'token', None),
+        )
+        return url
+    except Exception as e:
+        print(f"GCS signed URL error ({gcs_path}): {e}")
+        return None

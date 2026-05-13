@@ -93,6 +93,19 @@ BRIEFING TONE:
 - Tell each person about tasks assigned to THEM specifically.
 - Sign off warmly.
 
+KNOWLEDGE GAPS:
+- While reviewing emails and tasks, if you encounter something you cannot resolve because you lack
+  household context (who handles medical appointments, whether a recurring sender is important,
+  what a family member's schedule is), call queue_question with a specific, natural question
+  and your internal reasoning for why it matters.
+- Only queue a question if it would genuinely help you do your job better.
+  Do not manufacture questions. Do not queue more than one -- if a question is already queued,
+  only replace it if yours is more urgent.
+
+PASSIVE LEARNING:
+- If any overnight email reveals household facts worth remembering (a recurring appointment,
+  a family member mentioned, a preference stated), call save_note before writing the briefing.
+
 When finished reviewing all emails, call write_briefing with both messages.
 If there are no overnight emails, still call write_briefing with a brief "all quiet overnight" message for each user."""
 
@@ -314,6 +327,42 @@ def _make_agent_dismiss_email(agent_state: dict):
     return dismiss_email
 
 
+def _make_agent_save_note():
+    def save_note_agent(topic: str, content: str):
+        """Save a household note based on something learned from an email.
+
+        Call this when an overnight email reveals household facts worth keeping:
+        a recurring appointment, a family member mentioned, a preference stated.
+        Write the note in warm, first-person prose. Do not save sensitive details.
+
+        Args:
+            topic: Short descriptive name (e.g. 'school schedule', 'recurring bills').
+            content: What you learned, in natural prose.
+        """
+        from memory import save_note
+        return save_note(topic, content)
+    return save_note_agent
+
+
+def _make_agent_queue_question():
+    def queue_question_agent(question: str, context: str, priority: str = "normal"):
+        """Queue a question for Hana to ask the household.
+
+        Call this when you hit a genuine knowledge gap that would help you do your
+        job better -- who handles a certain responsibility, what a recurring sender
+        means, what a family member's schedule looks like. Only call once per run;
+        a higher-priority question will replace a lower-priority one.
+
+        Args:
+            question: The natural-language question to ask (shown to the user).
+            context: Internal reasoning for why this matters (not shown to user).
+            priority: 'high' or 'normal'. Use 'high' only for urgent gaps.
+        """
+        from memory import queue_question
+        return queue_question(question, context, priority)
+    return queue_question_agent
+
+
 def _make_write_briefing(db, agent_state: dict, overnight_emails: list):
     def write_briefing(dan_message: str, emily_message: str):
         """Write and store the morning briefing. Call this when you have finished reviewing all emails.
@@ -398,11 +447,14 @@ def process_single_email(email: dict) -> str:
     reassign_tool = _make_agent_reassign(agent_state, context_available)
     dismiss_tool = _make_agent_dismiss_email(agent_state)
     write_briefing_tool = _make_write_briefing(db, agent_state, [email])
+    save_note_tool = _make_agent_save_note()
+    queue_question_tool = _make_agent_queue_question()
 
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
-        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool],
+        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool,
+               save_note_tool, queue_question_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)
@@ -489,11 +541,14 @@ def run_morning_agent() -> str:
     reassign_tool = _make_agent_reassign(agent_state, context_available)
     dismiss_tool = _make_agent_dismiss_email(agent_state)
     write_briefing_tool = _make_write_briefing(db, agent_state, overnight_emails)
+    save_note_tool = _make_agent_save_note()
+    queue_question_tool = _make_agent_queue_question()
 
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
-        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool],
+        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool,
+               save_note_tool, queue_question_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)

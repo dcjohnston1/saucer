@@ -1,11 +1,37 @@
 import io
 import os
+import re
 import json
 import base64
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+
+
+def _normalize_sender(sender_str: str) -> str:
+    """Extract bare email address from a filter value, stripping display name and angle brackets."""
+    m = re.search(r'<([^>]+)>', sender_str)
+    return m.group(1).strip().lower() if m else sender_str.strip().lower()
+
+
+def build_gmail_query(sender_filter=None, keyword_filter=None, after_timestamp=None) -> str:
+    """Build the Gmail search query string used in messages.list calls."""
+    query_parts = []
+    match_clauses = []
+    if isinstance(sender_filter, list) and sender_filter:
+        match_clauses.extend(f'from:{_normalize_sender(s)}' for s in sender_filter)
+    elif sender_filter:
+        match_clauses.append(f'from:{_normalize_sender(sender_filter)}')
+    if isinstance(keyword_filter, list) and keyword_filter:
+        match_clauses.extend(f'"{k}"' if ' ' in k else k for k in keyword_filter)
+    elif keyword_filter:
+        match_clauses.append(f'"{keyword_filter}"' if ' ' in keyword_filter else keyword_filter)
+    if match_clauses:
+        query_parts.append('(' + ' OR '.join(match_clauses) + ')')
+    if after_timestamp:
+        query_parts.append(f'after:{int(after_timestamp)}')
+    return ' '.join(query_parts)
 
 
 def _build_service(refresh_token_key='GMAIL_REFRESH_TOKEN'):
@@ -102,15 +128,22 @@ def _extract_attachments(payload, service, user_id, msg_id):
                     data = resp.get('data', '')
             if data:
                 pdf_bytes = base64.urlsafe_b64decode(data)
+                pdf_size = len(pdf_bytes)
                 import pdfplumber
                 text = ''
                 with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                     for page in pdf.pages:
                         text += (page.extract_text() or '') + '\n'
-                attachments.append({
+                att = {
                     'filename': filename,
                     'extracted_text': text[:8000].strip(),
-                })
+                    '_pdf_size': pdf_size,
+                }
+                if pdf_size <= 10_000_000:
+                    att['_pdf_bytes_b64'] = base64.b64encode(pdf_bytes).decode()
+                else:
+                    print(f"Attachment {filename} too large ({pdf_size} bytes), skipping GCS auto-save")
+                attachments.append(att)
         except Exception as e:
             print(f"Attachment extraction error ({filename}): {e}")
             attachments.append({'filename': filename, 'extracted_text': ''})
@@ -124,24 +157,9 @@ def _extract_attachments(payload, service, user_id, msg_id):
 def _scan_account(service, account_label, sender_filter=None, keyword_filter=None, after_timestamp=None, prefix_ids=False):
     """Scan a single Gmail account and return email list."""
     user_id = 'me'
-    query_parts = []
-
-    match_clauses = []
-    if isinstance(sender_filter, list) and sender_filter:
-        match_clauses.extend(f'from:{s}' for s in sender_filter)
-    elif sender_filter:
-        match_clauses.append(f'from:{sender_filter}')
-    if isinstance(keyword_filter, list) and keyword_filter:
-        match_clauses.extend(f'"{k}"' if ' ' in k else k for k in keyword_filter)
-    elif keyword_filter:
-        match_clauses.append(f'"{keyword_filter}"' if ' ' in keyword_filter else keyword_filter)
-    if match_clauses:
-        query_parts.append('(' + ' OR '.join(match_clauses) + ')')
-
-    if after_timestamp:
-        query_parts.append(f'after:{int(after_timestamp)}')
-
-    query = ' '.join(query_parts) if query_parts else None
+    query_str = build_gmail_query(sender_filter, keyword_filter, after_timestamp)
+    query = query_str if query_str else None
+    print(f"[_scan_account] account={account_label} query={query!r}")
     results = service.users().messages().list(
         userId=user_id, maxResults=50, q=query
     ).execute()
@@ -191,3 +209,69 @@ def scan_emails(sender_filter=None, keyword_filter=None, after_timestamp=None):
             print(f"Error scanning {label}: {e}")
 
     return email_list
+
+
+def setup_gmail_watch(service, topic_name: str) -> dict:
+    """Call users.watch() to enable Pub/Sub push notifications for this account.
+
+    Returns the watch response dict containing historyId and expiration.
+    """
+    body = {
+        'labelIds': ['INBOX'],
+        'topicName': topic_name,
+    }
+    return service.users().watch(userId='me', body=body).execute()
+
+
+def fetch_new_messages_since(service, start_history_id: str) -> tuple:
+    """Fetch messages added to INBOX since start_history_id.
+
+    Returns (emails, latest_history_id). latest_history_id is None if history
+    is stale (historyId too old); caller should re-watch and reset.
+    """
+    user_id = 'me'
+    try:
+        history_resp = service.users().history().list(
+            userId=user_id,
+            startHistoryId=start_history_id,
+            historyTypes=['messageAdded'],
+            labelId='INBOX',
+        ).execute()
+    except Exception as e:
+        print(f"[gmail] history.list error (stale historyId?): {e}")
+        return [], None
+
+    new_message_ids = set()
+    for record in history_resp.get('history', []):
+        for ma in record.get('messagesAdded', []):
+            new_message_ids.add(ma['message']['id'])
+
+    latest_history_id = str(history_resp.get('historyId', start_history_id))
+
+    emails = []
+    for msg_id in new_message_ids:
+        try:
+            message = service.users().messages().get(
+                userId=user_id, id=msg_id, format='full'
+            ).execute()
+            headers = message['payload'].get('headers', [])
+            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
+            sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
+            date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+            body_text = _extract_body(message['payload'])
+            html_body = _extract_html_body(message['payload'])
+            attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
+            emails.append({
+                'id': msg_id,
+                'subject': subject,
+                'sender': sender,
+                'date': date,
+                'body': body_text,
+                'html_body': html_body,
+                'snippet': message.get('snippet', ''),
+                'attachments': attachments,
+            })
+        except Exception as e:
+            print(f"[gmail] fetch message {msg_id} error: {e}")
+
+    return emails, latest_history_id

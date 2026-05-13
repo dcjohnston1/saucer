@@ -94,6 +94,16 @@ function openChat() {
   document.getElementById('chat-overlay').classList.remove('hidden');
   _setChatPanelHeight();
   document.getElementById('msg-input').focus();
+
+  if (_pendingQuestion) {
+    const q = _pendingQuestion;
+    _pendingQuestion = null;
+    document.getElementById('chat-btn').classList.remove('chat-btn--has-question');
+    // Snooze defensively so the pulse doesn't fire again for 3 days.
+    // Hana will call clear_question via tool if she gets her answer.
+    fetch(`${BACKEND_URL}/hana/question/snooze`, { method: 'POST' }).catch(() => {});
+    setTimeout(() => _injectQuestionContext(q), 200);
+  }
 }
 
 function closeChat() {
@@ -125,6 +135,7 @@ function closeDrawer() {
 
 function openSendersScreen() {
   document.getElementById('senders-screen').classList.remove('hidden');
+  loadEmailIntent();
 }
 
 function closeSendersScreen() {
@@ -212,14 +223,16 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('context-back-btn').addEventListener('click', closeContextScreen);
 
-  // Onboarding screen
-  document.getElementById('menu-onboarding').addEventListener('click', openOnboarding);
-  document.getElementById('onboarding-back-btn').addEventListener('click', closeOnboarding);
-  document.getElementById('onboarding-send-btn').addEventListener('click', submitOnboardingMessage);
-  document.getElementById('onboarding-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitOnboardingMessage(); }
+  // Hana's notes screen
+  document.getElementById('menu-notes').addEventListener('click', () => {
+    closeDrawer();
+    openNotesScreen();
   });
-  document.getElementById('onboarding-done-btn').addEventListener('click', closeOnboarding);
+  document.getElementById('notes-back-btn').addEventListener('click', closeNotesScreen);
+  document.getElementById('note-detail-close-btn').addEventListener('click', closeNoteDetailDrawer);
+  document.getElementById('note-detail-overlay').addEventListener('click', closeNoteDetailDrawer);
+  document.getElementById('note-delete-btn').addEventListener('click', deleteCurrentNote);
+  document.getElementById('note-chat-btn').addEventListener('click', chatAboutCurrentNote);
   document.getElementById('add-role-btn').addEventListener('click', addRole);
   document.getElementById('new-role-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addRole();
@@ -278,6 +291,31 @@ window.addEventListener('DOMContentLoaded', () => {
   // Resync button inside Email Filters screen
   document.getElementById('resync-btn').addEventListener('click', () => resyncEmails());
 
+  // Intent description
+  document.getElementById('intent-save-btn').addEventListener('click', saveEmailIntent);
+
+  // Review dismissed emails
+  document.getElementById('review-dismissed-btn').addEventListener('click', openDismissedReview);
+  document.getElementById('dismissed-review-close-btn').addEventListener('click', closeDismissedReview);
+  document.getElementById('dismissed-review-overlay').addEventListener('click', closeDismissedReview);
+
+  // Dismiss feedback drawer
+  document.getElementById('dismiss-feedback-close-btn').addEventListener('click', closeDismissFeedbackDrawer);
+  document.getElementById('dismiss-feedback-overlay').addEventListener('click', closeDismissFeedbackDrawer);
+  document.getElementById('dismiss-feedback-confirm-btn').addEventListener('click', confirmDismissFeedback);
+
+  // Relevant Files screen
+  document.getElementById('menu-files').addEventListener('click', () => { closeDrawer(); openFilesScreen(); });
+  document.getElementById('files-back-btn').addEventListener('click', closeFilesScreen);
+
+  // Emails Hana dismissed screen
+  document.getElementById('menu-hana-dismissed').addEventListener('click', () => { closeDrawer(); openHanaDismissedScreen(); });
+  document.getElementById('open-hana-dismissed-btn').addEventListener('click', openHanaDismissedScreen);
+  document.getElementById('hana-dismissed-back-btn').addEventListener('click', closeHanaDismissedScreen);
+  document.getElementById('files-upload-btn').addEventListener('click', () => document.getElementById('files-upload-input').click());
+  document.getElementById('files-upload-input').addEventListener('change', handleFileUpload);
+  document.getElementById('files-search').addEventListener('input', filterFilesList);
+
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');
   if (stored) {
@@ -309,6 +347,7 @@ function showMainApp(user) {
   initVoice();
   initPullToRefresh();
   checkMorningBriefing();
+  startQuestionPolling();
 }
 
 function openMembersScreen() {
@@ -483,13 +522,30 @@ async function loadCachedEmails(filters) {
       return;
     }
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    emails.forEach(email => {
-      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
-      emailsContent.appendChild(buildEmailCard(email, isNew));
-    });
+    _renderEmailsWithGroups(emailsContent, emails);
     wireSearchInput(emailsContent);
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
+  }
+}
+
+function _renderEmailsWithGroups(container, emails) {
+  const permittedEmails = emails.filter(e => (e.verdict || 'permitted') !== 'uncertain');
+  const uncertainEmails = emails.filter(e => e.verdict === 'uncertain');
+  permittedEmails.forEach(email => {
+    const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
+    container.appendChild(buildEmailCard(email, isNew));
+  });
+  if (uncertainEmails.length > 0) {
+    const header = document.createElement('div');
+    header.className = 'uncertain-section-header';
+    header.dataset.uncertainHeader = '1';
+    header.innerHTML = `<span class="uncertain-section-title">Emails Hana flagged for review</span><span class="uncertain-count-badge">${uncertainEmails.length}</span>`;
+    container.appendChild(header);
+    uncertainEmails.forEach(email => {
+      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
+      container.appendChild(buildEmailCard(email, isNew));
+    });
   }
 }
 
@@ -508,9 +564,25 @@ async function backgroundSync(filters) {
     const newEmails = emails.filter(e => !currentIds.has(e.id));
     if (newEmails.length === 0) return;
     newEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    newEmails.forEach(email => {
-      emailsContent.insertBefore(buildEmailCard(email, true), emailsContent.firstChild);
+    // Insert permitted ones at top, then re-render uncertain section
+    const newPermitted = newEmails.filter(e => (e.verdict || 'permitted') !== 'uncertain');
+    const newUncertain = newEmails.filter(e => e.verdict === 'uncertain');
+    const firstChild = emailsContent.firstChild;
+    newPermitted.forEach(email => {
+      emailsContent.insertBefore(buildEmailCard(email, true), firstChild);
     });
+    if (newUncertain.length > 0) {
+      let header = emailsContent.querySelector('[data-uncertain-header]');
+      if (!header) {
+        header = document.createElement('div');
+        header.className = 'uncertain-section-header';
+        header.dataset.uncertainHeader = '1';
+        emailsContent.appendChild(header);
+      }
+      newUncertain.forEach(email => emailsContent.appendChild(buildEmailCard(email, true)));
+      const count = emailsContent.querySelectorAll('.email-card--uncertain').length;
+      header.innerHTML = `<span class="uncertain-section-title">Emails Hana flagged for review</span><span class="uncertain-count-badge">${count}</span>`;
+    }
     wireSearchInput(emailsContent);
     const label = newEmails.length === 1 ? '1 new email' : `${newEmails.length} new emails`;
     showToast(label);
@@ -721,19 +793,25 @@ function buildEmailCard(email, isNew = false) {
   const summary = email.summary || null;
   const previewText = summary || bodyText.slice(0, 220).replace(/\n+/g, ' ');
   const hasMore = bodyText.length > 220 || email.html_body;
+  const isUncertain = email.verdict === 'uncertain';
 
   const wrapper = document.createElement('div');
   wrapper.className = 'email-card-wrapper';
   wrapper.dataset.emailId = email.id;
   wrapper.dataset.emailSender = email.sender;
+  wrapper.dataset.verdict = email.verdict || 'permitted';
   wrapper.innerHTML = '<div class="swipe-email-action-bg swipe-dismiss-bg">Dismiss ✕</div>';
 
   const card = document.createElement('div');
   card.className = 'email-card';
   if (isNew) card.classList.add('is-new');
+  if (isUncertain) card.classList.add('email-card--uncertain');
   const accountBadge = email.account ? `<span class="email-account-badge">${escapeHtml(email.account)}</span>` : '';
   const newBadge = isNew ? '<span class="email-new-badge" title="New"></span>' : '';
   const previewClass = summary ? 'email-preview email-preview-summary' : 'email-preview';
+  const rawReason = email.verdict_reason || '';
+  const truncatedReason = rawReason.length > 120 ? rawReason.slice(0, 120) + '…' : rawReason;
+  const uncertainBadge = isUncertain ? `<span class="uncertain-badge">Hana wasn't sure: ${escapeHtml(truncatedReason || 'reason not recorded')}</span>` : '';
   card.innerHTML = `
     <div class="email-meta">
       <span class="email-sender">${escapeHtml(email.sender)}</span>
@@ -741,6 +819,7 @@ function buildEmailCard(email, isNew = false) {
     </div>
     ${accountBadge}
     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+    ${uncertainBadge}
     <div class="${previewClass}">${escapeHtml(previewText)}${(!summary && bodyText.length > 220) ? '…' : ''}</div>
     ${hasMore ? '<button class="email-expand-btn">Show more ▾</button>' : ''}
   `;
@@ -811,7 +890,7 @@ function buildEmailCard(email, isNew = false) {
 
   wrapper.appendChild(card);
   const bodyPreview = (email.body || email.snippet || '').slice(0, 300);
-  addSwipeToDismiss(wrapper, card, email.id, email.sender, email.subject || '', bodyPreview);
+  addSwipeToDismiss(wrapper, card, email.id, email.sender, email.subject || '', bodyPreview, email.verdict || 'permitted');
   return wrapper;
 }
 
@@ -1035,23 +1114,25 @@ async function reviewEmail(emailId, wrapper) {
 
 async function resyncEmails() {
   const emailsContent = document.getElementById('emails-content');
-  emailsContent.innerHTML = '<div class="loading">Syncing 90 days of history…</div>';
+  emailsContent.innerHTML = '<div class="loading">Hana is reviewing your emails…</div>';
   try {
     const res = await fetch(`${BACKEND_URL}/emails/resync`, { method: 'POST' });
     if (!res.ok) throw new Error('Resync failed');
     const data = await res.json();
+    const counts = data.eval_counts || {};
     emailsContent.innerHTML = '';
     if (!data.emails || data.emails.length === 0) {
-      emailsContent.innerHTML = '<div class="empty-state">No emails found.</div>';
+      const blocked = counts.blocked || 0;
+      emailsContent.innerHTML = `<div class="empty-state">Hana filtered out everything in the last 90 days based on your intent.${blocked > 0 ? ` Check "Emails Hana dismissed" if something looks missing, or "Review dismissed emails" to reconsider anything you removed yourself.` : ''}</div>`;
       return;
     }
     const emails = data.emails;
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    emails.forEach(email => {
-      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
-      emailsContent.appendChild(buildEmailCard(email, isNew));
-    });
+    _renderEmailsWithGroups(emailsContent, emails);
     wireSearchInput(emailsContent);
+    if (counts.blocked > 0) {
+      showToast(`Filtered ${counts.blocked} email${counts.blocked === 1 ? '' : 's'} — check "Emails Hana dismissed" to review`);
+    }
   } catch (err) {
     emailsContent.textContent = `Error: ${err.message}`;
   }
@@ -1097,10 +1178,7 @@ async function loadEmails(filters, preserveExisting = false) {
       return;
     }
     emails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    emails.forEach(email => {
-      const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
-      emailsContent.appendChild(buildEmailCard(email, isNew));
-    });
+    _renderEmailsWithGroups(emailsContent, emails);
     wireSearchInput(emailsContent);
   } catch (err) {
     if (refreshBanner) {
@@ -1360,7 +1438,7 @@ async function completeTask(title) {
 
 // ── Swipe to dismiss (emails) ─────────────────────────────────────────────────
 
-function addSwipeToDismiss(wrapper, card, emailId, senderEmail, emailSubject, bodyPreview) {
+function addSwipeToDismiss(wrapper, card, emailId, senderEmail, emailSubject, bodyPreview, verdict = 'permitted') {
   let startX = 0, startY = 0, deltaX = 0;
   let dragging = false, axisLocked = false, axisIsHorizontal = false;
   const bgEl = wrapper.querySelector('.swipe-email-action-bg');
@@ -1399,11 +1477,18 @@ function addSwipeToDismiss(wrapper, card, emailId, senderEmail, emailSubject, bo
     dragging = false;
     const unhandled = card.querySelectorAll('.proposal-row:not(.proposal-row--handled)');
     if (deltaX < -80 && unhandled.length === 0) {
-      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
-      card.style.transform = 'translateX(-100%)';
-      card.style.opacity = '0';
-      card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
-      dismissEmail(emailId);
+      if (verdict === 'uncertain') {
+        card.style.transition = 'transform 0.25s ease';
+        card.style.transform = 'translateX(0)';
+        if (bgEl) { bgEl.textContent = 'Dismiss ✕'; bgEl.className = 'swipe-email-action-bg swipe-dismiss-bg'; }
+        openDismissFeedbackDrawer(emailId, emailSubject, wrapper);
+      } else {
+        card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+        card.style.transform = 'translateX(-100%)';
+        card.style.opacity = '0';
+        card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+        dismissEmail(emailId);
+      }
     } else if (deltaX > 80 && senderEmail) {
       card.style.transition = 'transform 0.25s ease';
       card.style.transform = 'translateX(0)';
@@ -1683,64 +1768,240 @@ async function dismissProposal(proposalId, wrapperEl) {
 
 // ── Voice ─────────────────────────────────────────────────────────────────────
 
-let voiceEnabled = false;
+let voiceModeActive = localStorage.getItem('hana_voice_mode') === 'true';
 let recognition = null;
+let recognitionFired = false;
+let _voiceTranscript = '';    // accumulated final chunks for current session
+let _voiceSilenceTimer = null; // fires after 1.8s of silence to auto-submit
 
 function initVoice() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return; // browser doesn't support it — mic stays hidden
+  if (!SpeechRecognition) return;
 
   const micBtn = document.getElementById('mic-btn');
+  const voiceBtn = document.getElementById('voice-mode-btn');
   micBtn.classList.remove('hidden');
+
+  _applyVoiceModeBtnState();
+
+  voiceBtn.addEventListener('click', () => {
+    voiceModeActive = !voiceModeActive;
+    localStorage.setItem('hana_voice_mode', voiceModeActive);
+    _applyVoiceModeBtnState();
+  });
 
   recognition = new SpeechRecognition();
   recognition.lang = 'en-US';
-  recognition.interimResults = false;
+  recognition.continuous = true;      // don't stop on natural speech pauses
+  recognition.interimResults = true;  // stream results so we can detect silence
   recognition.maxAlternatives = 1;
 
   recognition.onresult = (e) => {
-    const transcript = e.results[0][0].transcript;
-    document.getElementById('msg-input').value = transcript;
-    micBtn.classList.remove('mic-btn--recording');
-    sendMessage(true);
+    let finalChunk = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
+    }
+    if (!finalChunk) return; // ignore interim-only events
+
+    _voiceTranscript += (_voiceTranscript ? ' ' : '') + finalChunk.trim();
+    document.getElementById('msg-input').value = _voiceTranscript;
+    recognitionFired = true;
+
+    // Reset silence timer — auto-submit 1.8s after last spoken word
+    clearTimeout(_voiceSilenceTimer);
+    _voiceSilenceTimer = setTimeout(() => recognition.stop(), 1800);
   };
 
-  recognition.onerror = () => micBtn.classList.remove('mic-btn--recording');
-  recognition.onend = () => micBtn.classList.remove('mic-btn--recording');
+  recognition.onerror = () => {
+    clearTimeout(_voiceSilenceTimer);
+    micBtn.classList.remove('mic-btn--recording');
+    recognitionFired = false;
+    _voiceTranscript = '';
+  };
+
+  recognition.onend = () => {
+    clearTimeout(_voiceSilenceTimer);
+    micBtn.classList.remove('mic-btn--recording');
+    if (recognitionFired && _voiceTranscript.trim()) {
+      document.getElementById('msg-input').value = _voiceTranscript.trim();
+      _voiceTranscript = '';
+      recognitionFired = false;
+      sendMessage();
+    } else {
+      _voiceTranscript = '';
+      recognitionFired = false;
+    }
+  };
 
   micBtn.addEventListener('click', () => {
-    if (micBtn.classList.contains('mic-btn--recording')) {
-      recognition.stop();
-    } else {
-      // Unlock speechSynthesis during user gesture so iOS allows playback later
-      if (window.speechSynthesis) {
-        const unlock = new SpeechSynthesisUtterance('');
-        window.speechSynthesis.speak(unlock);
+    if (micBtn.classList.contains('hana-speaking')) {
+      window.speechSynthesis.cancel();
+      micBtn.classList.remove('hana-speaking');
+      if (voiceModeActive) {
+        _unlockSpeechSynthesis();
+        _voiceTranscript = '';
+        micBtn.classList.add('mic-btn--recording');
+        recognition.start();
       }
+      return;
+    }
+
+    if (micBtn.classList.contains('mic-btn--recording')) {
+      clearTimeout(_voiceSilenceTimer);
+      recognition.stop(); // onend handles submit
+    } else {
+      _unlockSpeechSynthesis();
+      _voiceTranscript = '';
       micBtn.classList.add('mic-btn--recording');
       recognition.start();
     }
   });
 }
 
-function speakReply(text) {
-  if (!voiceEnabled || !window.speechSynthesis) return;
+function _unlockSpeechSynthesis() {
+  if (window.speechSynthesis) {
+    const unlock = new SpeechSynthesisUtterance('');
+    window.speechSynthesis.speak(unlock);
+  }
+}
+
+function _applyVoiceModeBtnState() {
+  const voiceBtn = document.getElementById('voice-mode-btn');
+  if (!voiceBtn) return;
+  if (voiceModeActive) {
+    voiceBtn.textContent = '🔊';
+    voiceBtn.classList.add('voice-mode-on');
+    voiceBtn.title = 'Voice mode on — tap to mute';
+  } else {
+    voiceBtn.textContent = '🔇';
+    voiceBtn.classList.remove('voice-mode-on');
+    voiceBtn.title = 'Voice mode off — tap to enable';
+  }
+}
+
+function stripMarkdown(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/#{1,6}\s/g, '')
+    .replace(/`{1,3}[^`]*`{1,3}/g, '')
+    .replace(/\|/g, ', ')
+    .replace(/\n+/g, '. ')
+    .trim();
+}
+
+function speakReply(text, bubbleEl) {
+  if (!voiceModeActive || !window.speechSynthesis) return;
+  _doSpeak(text, bubbleEl);
+}
+
+function _doSpeak(text, bubbleEl) {
   window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
+  const micBtn = document.getElementById('mic-btn');
+
+  // iOS PWA sometimes silently blocks synthesis — detect and fall back to tap-to-hear
+  const isIOS = /iP(hone|od|ad)/.test(navigator.userAgent);
+  let speechStarted = false;
+
+  const utt = new SpeechSynthesisUtterance(stripMarkdown(text));
   utt.lang = 'en-US';
-  utt.rate = 1.05;
-  window.speechSynthesis.speak(utt);
+  utt.rate = 0.92;
+  utt.pitch = 1.0;
+  utt.volume = 1.0;
+
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length > 0) {
+    _setPreferredVoice(utt, voices);
+    window.speechSynthesis.speak(utt);
+  } else {
+    // Async voice load (Chrome, some iOS)
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.onvoiceschanged = null;
+      _setPreferredVoice(utt, window.speechSynthesis.getVoices());
+      window.speechSynthesis.speak(utt);
+    };
+    // iOS sometimes never fires onvoiceschanged — retry after 100ms
+    setTimeout(() => {
+      const v = window.speechSynthesis.getVoices();
+      if (v.length > 0 && !utt.voice) {
+        _setPreferredVoice(utt, v);
+        window.speechSynthesis.speak(utt);
+      }
+    }, 100);
+  }
+
+  utt.onstart = () => {
+    speechStarted = true;
+    if (micBtn) {
+      micBtn.classList.add('hana-speaking');
+      micBtn.textContent = '⏹';
+    }
+  };
+
+  utt.onend = () => {
+    speechStarted = true;
+    if (micBtn) {
+      micBtn.classList.remove('hana-speaking');
+      micBtn.textContent = '🎤';
+      micBtn.classList.add('ready-pulse');
+      setTimeout(() => micBtn.classList.remove('ready-pulse'), 1500);
+    }
+    // Auto-restart mic in continuous voice mode
+    if (voiceModeActive && recognition) {
+      setTimeout(() => {
+        if (!voiceModeActive) return;
+        try {
+          recognitionFired = false;
+          _voiceTranscript = '';
+          if (micBtn) micBtn.classList.add('mic-btn--recording');
+          recognition.start();
+        } catch (e) { /* already running */ }
+      }, 400);
+    }
+  };
+
+  // iOS PWA fallback: if synthesis never starts within 600ms, show tap-to-hear
+  if (isIOS) {
+    setTimeout(() => {
+      if (!speechStarted) {
+        window.speechSynthesis.cancel();
+        _addTapToHearBtn(text, bubbleEl);
+      }
+    }, 600);
+  }
+}
+
+function _setPreferredVoice(utt, voices) {
+  const preferred = voices.find(v =>
+    v.lang.startsWith('en') && (
+      v.name.includes('Samantha') ||
+      v.name.includes('Google US English') ||
+      v.name.includes('Microsoft Aria') ||
+      v.name.includes('Karen')
+    )
+  ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+  if (preferred) utt.voice = preferred;
+}
+
+function _addTapToHearBtn(text, bubbleEl) {
+  if (!bubbleEl || !window.speechSynthesis) return;
+  const btn = document.createElement('button');
+  btn.className = 'tap-to-hear-btn';
+  btn.textContent = '▶ Tap to hear';
+  btn.addEventListener('click', () => {
+    btn.remove();
+    _doSpeak(text, bubbleEl);
+  });
+  bubbleEl.appendChild(btn);
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
-async function sendMessage(fromVoice = false) {
+async function sendMessage() {
   const msgInput = document.getElementById('msg-input');
   const sendBtn = document.getElementById('send-btn');
   const text = msgInput.value.trim();
   if (!text || !currentUser) return;
-
-  if (fromVoice) voiceEnabled = true;
 
   appendMessage('user', text);
   msgInput.value = '';
@@ -1751,13 +2012,14 @@ async function sendMessage(fromVoice = false) {
     const res = await fetch(`${BACKEND_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: currentUser.name, user_email: currentUser.email, message: text, history: conversationHistory, conversation_id: conversationId })
+      body: JSON.stringify({ user: currentUser.name, user_email: currentUser.email, message: text, history: conversationHistory, conversation_id: conversationId, voice_mode: voiceModeActive })
     });
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
     typing.remove();
-    appendMessage('saucer', data.reply);
-    speakReply(data.reply);
+    const replyBubble = appendMessage('saucer', data.reply);
+    if (data.actions && data.actions.includes('noted')) appendActionChip('Noted');
+    speakReply(data.reply, replyBubble);
     if (data.model) document.getElementById('model-info').textContent = `Powered by ${data.model}`;
 
     conversationHistory.push(
@@ -1783,6 +2045,15 @@ function appendMessage(sender, text, isTyping = false) {
   messages.appendChild(bubble);
   messages.scrollTop = messages.scrollHeight;
   return bubble;
+}
+
+function appendActionChip(label) {
+  const messages = document.getElementById('messages');
+  const chip = document.createElement('div');
+  chip.className = 'action-chip';
+  chip.textContent = label;
+  messages.appendChild(chip);
+  messages.scrollTop = messages.scrollHeight;
 }
 
 // ── Onboarding ────────────────────────────────────────────────────────────────
@@ -2508,3 +2779,491 @@ function openBriefingChat() {
     }
   }, 300);
 }
+
+// ── Question Queue Polling ────────────────────────────────────────────────────
+
+let _questionPollingTimer = null;
+let _pendingQuestion = null;
+
+async function checkQuestionQueue() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/hana/question`);
+    const data = await res.json();
+    const btn = document.getElementById('chat-btn');
+    if (data.has_question) {
+      _pendingQuestion = data.question;
+      btn.classList.add('chat-btn--has-question');
+    } else {
+      _pendingQuestion = null;
+      btn.classList.remove('chat-btn--has-question');
+    }
+  } catch (e) {
+    // Silently ignore — question polling is best-effort
+  }
+}
+
+function startQuestionPolling() {
+  checkQuestionQueue();
+  _questionPollingTimer = setInterval(checkQuestionQueue, 5 * 60 * 1000);
+}
+
+
+function _injectQuestionContext(question) {
+  // Display Hana's question as a primed assistant message
+  const messages = document.getElementById('messages');
+  if (!messages) return;
+  const bubble = document.createElement('div');
+  bubble.className = 'message assistant';
+  bubble.textContent = question;
+  messages.appendChild(bubble);
+  messages.scrollTop = messages.scrollHeight;
+  // Add to conversation history so Gemini sees it
+  conversationHistory.push({ role: 'assistant', content: question });
+}
+
+// ── Hana's Notes Screen ───────────────────────────────────────────────────────
+
+let _currentNoteSlug = null;
+let _currentNoteTopic = null;
+let _currentNoteContent = null;
+
+async function openNotesScreen() {
+  document.getElementById('notes-screen').classList.remove('hidden');
+  const body = document.getElementById('notes-screen-body');
+  body.innerHTML = '<div class="loading">Loading notes...</div>';
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/hana/notes`);
+    const data = await res.json();
+    const notes = data.notes || [];
+
+    if (notes.length === 0) {
+      body.innerHTML = '<p class="notes-empty-state">Nothing here yet — Hana will add notes as she gets to know your household.</p>';
+      return;
+    }
+
+    body.innerHTML = '';
+    notes.forEach(note => {
+      const card = document.createElement('div');
+      card.className = 'note-card';
+
+      const updated = note.updated_at ? new Date(note.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      const excerpt = (note.content || '').slice(0, 120);
+
+      card.innerHTML = `
+        <div class="note-card-topic">${escapeHtml(note.topic)}</div>
+        <div class="note-card-excerpt">${escapeHtml(excerpt)}${note.content && note.content.length > 120 ? '…' : ''}</div>
+        ${updated ? `<div class="note-card-date">Updated ${updated}</div>` : ''}
+      `;
+      card.addEventListener('click', () => openNoteDetail(note));
+      body.appendChild(card);
+    });
+  } catch (e) {
+    body.innerHTML = '<p class="notes-empty-state">Couldn\'t load notes right now.</p>';
+  }
+}
+
+function closeNotesScreen() {
+  document.getElementById('notes-screen').classList.add('hidden');
+}
+
+function openNoteDetail(note) {
+  _currentNoteSlug = note.slug;
+  _currentNoteTopic = note.topic;
+  _currentNoteContent = note.content;
+
+  document.getElementById('note-detail-title').textContent = note.topic;
+  const body = document.getElementById('note-detail-body');
+  body.innerHTML = `<div class="note-detail-content">${escapeHtml(note.content || '')}</div>`;
+
+  document.getElementById('note-detail-overlay').classList.remove('hidden');
+  document.getElementById('note-detail-drawer').classList.remove('hidden');
+}
+
+function closeNoteDetailDrawer() {
+  document.getElementById('note-detail-overlay').classList.add('hidden');
+  document.getElementById('note-detail-drawer').classList.add('hidden');
+  _currentNoteSlug = null;
+  _currentNoteTopic = null;
+  _currentNoteContent = null;
+}
+
+async function deleteCurrentNote() {
+  if (!_currentNoteSlug) return;
+  const topic = _currentNoteTopic || _currentNoteSlug;
+  if (!confirm(`Delete note "${topic}"?`)) return;
+
+  try {
+    await fetch(`${BACKEND_URL}/hana/notes/${encodeURIComponent(_currentNoteSlug)}`, { method: 'DELETE' });
+    closeNoteDetailDrawer();
+    showToast('Note deleted');
+    openNotesScreen(); // Refresh the list
+  } catch (e) {
+    showToast('Error deleting note');
+  }
+}
+
+function chatAboutCurrentNote() {
+  const topic = _currentNoteTopic;
+  const content = _currentNoteContent;
+  closeNoteDetailDrawer();
+  closeNotesScreen();
+  openChat();
+
+  setTimeout(() => {
+    const primedMsg = `[context: user is reviewing the note titled "${topic}". Content: "${(content || '').slice(0, 500)}"]`;
+    // Inject Hana's opening as a primed assistant message
+    const openingText = `I've been keeping some notes on "${topic}" based on things I've picked up. Want to add anything, correct something, or just talk through it?`;
+    const messages = document.getElementById('messages');
+    if (messages) {
+      const bubble = document.createElement('div');
+      bubble.className = 'message assistant';
+      bubble.textContent = openingText;
+      messages.appendChild(bubble);
+      messages.scrollTop = messages.scrollHeight;
+    }
+    conversationHistory.push({ role: 'user', content: primedMsg });
+    conversationHistory.push({ role: 'assistant', content: openingText });
+  }, 200);
+}
+
+// ── Email Intent ──────────────────────────────────────────────────────────────
+
+async function loadEmailIntent() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/email-intent`);
+    const data = await res.json();
+    const input = document.getElementById('intent-input');
+    if (input) input.value = data.intent || '';
+  } catch (e) {
+    console.error('Failed to load intent:', e);
+  }
+}
+
+async function saveEmailIntent() {
+  const input = document.getElementById('intent-input');
+  const btn = document.getElementById('intent-save-btn');
+  const intent = input ? input.value.trim() : '';
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    await fetch(`${BACKEND_URL}/email-intent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent, user: getUserEmail() }),
+    });
+    showToast('Intent saved');
+    btn.textContent = 'Saved ✓';
+    setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    showToast('Error saving intent');
+    btn.textContent = 'Save';
+    btn.disabled = false;
+  }
+}
+
+// ── Dismiss Feedback Drawer ───────────────────────────────────────────────────
+
+let _dismissFeedbackEmailId = null;
+let _dismissFeedbackWrapper = null;
+
+async function openDismissFeedbackDrawer(emailId, emailSubject, wrapper) {
+  _dismissFeedbackEmailId = emailId;
+  _dismissFeedbackWrapper = wrapper;
+
+  // Reset form
+  document.querySelectorAll('input[name="dismiss-reason"]').forEach(r => r.checked = false);
+  document.getElementById('dismiss-feedback-text').value = '';
+
+  // Load topic noun phrase async
+  const topicLabel = document.getElementById('dismiss-feedback-topic-label');
+  topicLabel.textContent = 'We don\'t do this';
+
+  document.getElementById('dismiss-feedback-overlay').classList.remove('hidden');
+  document.getElementById('dismiss-feedback-drawer').classList.remove('hidden');
+
+  // Try to fetch topic label from backend
+  try {
+    const emails = await fetch(`${BACKEND_URL}/emails/cached`).then(r => r.json()).then(d => d.emails || []);
+    const email = emails.find(e => e.id === emailId);
+    if (email) {
+      const res = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}/topic-phrase`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.phrase) topicLabel.textContent = `We don't do ${data.phrase}`;
+      }
+    }
+  } catch (e) {
+    // Best-effort — label stays as default
+  }
+}
+
+function closeDismissFeedbackDrawer() {
+  document.getElementById('dismiss-feedback-overlay').classList.add('hidden');
+  document.getElementById('dismiss-feedback-drawer').classList.add('hidden');
+  _dismissFeedbackEmailId = null;
+  _dismissFeedbackWrapper = null;
+}
+
+async function confirmDismissFeedback() {
+  const emailId = _dismissFeedbackEmailId;
+  const wrapper = _dismissFeedbackWrapper;
+  if (!emailId) return;
+
+  const selected = document.querySelector('input[name="dismiss-reason"]:checked');
+  const reasonType = selected ? selected.value : 'free_text';
+  const reasonText = reasonType === 'free_text'
+    ? document.getElementById('dismiss-feedback-text').value.trim()
+    : (reasonType === 'doesnt_apply'
+        ? document.getElementById('dismiss-feedback-topic-label').textContent
+        : 'We opted out');
+
+  const btn = document.getElementById('dismiss-feedback-confirm-btn');
+  btn.disabled = true;
+
+  try {
+    await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(emailId)}/dismiss-feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason_type: reasonType, reason_text: reasonText, user: getUserEmail() }),
+    });
+    closeDismissFeedbackDrawer();
+    if (wrapper) {
+      const card = wrapper.querySelector('.email-card');
+      if (card) {
+        card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+        card.style.transform = 'translateX(-100%)';
+        card.style.opacity = '0';
+        card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+      } else {
+        wrapper.remove();
+      }
+    }
+    showToast('Dismissed');
+  } catch (e) {
+    showToast('Error dismissing email');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Dismissed Email Review ────────────────────────────────────────────────────
+
+async function openDismissedReview() {
+  document.getElementById('dismissed-review-overlay').classList.remove('hidden');
+  document.getElementById('dismissed-review-modal').classList.remove('hidden');
+  const body = document.getElementById('dismissed-review-body');
+  body.innerHTML = '<p class="empty-state">Re-evaluating against current intent…</p>';
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/emails/dismissed-review`);
+    const data = await res.json();
+
+    if (data.message) {
+      body.innerHTML = `<p class="empty-state">${escapeHtml(data.message)}</p>`;
+      return;
+    }
+
+    const emails = data.emails || [];
+    if (emails.length === 0) {
+      body.innerHTML = '<p class="empty-state">No dismissed emails match your current intent. You\'re all good.</p>';
+      return;
+    }
+
+    body.innerHTML = `<p style="font-size:0.82rem;color:#888;margin-bottom:12px">These emails were dismissed but may match what you care about now. Review and restore anything you want back.</p>`;
+    emails.forEach(email => {
+      const card = document.createElement('div');
+      card.className = 'dismissed-review-card';
+      card.dataset.emailId = email.id;
+      const dateStr = email.date ? formatEmailDate(email.date) : '';
+      card.innerHTML = `
+        <div class="dismissed-review-card-meta">${escapeHtml(dateStr)}</div>
+        <div class="dismissed-review-card-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+        <div class="dismissed-review-card-sender">${escapeHtml(email.sender || '')}</div>
+        <div class="dismissed-review-card-reason">Hana thinks: ${escapeHtml(email.review_reason || email.review_verdict || '')}</div>
+        <div class="dismissed-review-actions">
+          <button class="dismissed-review-restore-btn">Restore</button>
+          <button class="dismissed-review-keep-btn">Keep dismissed</button>
+        </div>
+      `;
+      card.querySelector('.dismissed-review-restore-btn').addEventListener('click', async () => {
+        await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/restore`, { method: 'POST' });
+        card.remove();
+        showToast('Email restored');
+        if (!body.querySelector('.dismissed-review-card')) {
+          body.innerHTML = '<p class="empty-state">All caught up!</p>';
+        }
+      });
+      card.querySelector('.dismissed-review-keep-btn').addEventListener('click', () => {
+        card.remove();
+        if (!body.querySelector('.dismissed-review-card')) {
+          body.innerHTML = '<p class="empty-state">All caught up!</p>';
+        }
+      });
+      body.appendChild(card);
+    });
+  } catch (e) {
+    body.innerHTML = '<p class="empty-state">Could not load dismissed emails.</p>';
+  }
+}
+
+function closeDismissedReview() {
+  document.getElementById('dismissed-review-overlay').classList.add('hidden');
+  document.getElementById('dismissed-review-modal').classList.add('hidden');
+}
+
+// ── Relevant Files ────────────────────────────────────────────────────────────
+
+let _allFiles = [];
+
+async function openFilesScreen() {
+  document.getElementById('files-screen').classList.remove('hidden');
+  await loadFilesList();
+}
+
+function closeFilesScreen() {
+  document.getElementById('files-screen').classList.add('hidden');
+}
+
+function openHanaDismissedScreen() {
+  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+  document.getElementById('hana-dismissed-screen').classList.remove('hidden');
+  loadHanaDismissedEmails();
+}
+
+function closeHanaDismissedScreen() {
+  document.getElementById('hana-dismissed-screen').classList.add('hidden');
+}
+
+async function loadHanaDismissedEmails() {
+  const list = document.getElementById('hana-dismissed-list');
+  list.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const res = await fetch(`${BACKEND_URL}/emails/hana-dismissed`);
+    const data = await res.json();
+    const emails = data.emails || [];
+    if (emails.length === 0) {
+      list.innerHTML = '<div class="empty-state">Nothing here — Hana hasn\'t dismissed anything recently, or everything looks right.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    emails.forEach(email => {
+      const card = document.createElement('div');
+      card.className = 'hana-dismissed-card';
+      const dateStr = email.date ? formatEmailDate(email.date) : '';
+      const reasonText = email.reason || '';
+      const truncatedReason = reasonText.length > 120 ? reasonText.slice(0, 120) + '…' : reasonText;
+      card.innerHTML = `
+        <div class="hana-dismissed-card-meta">${escapeHtml(dateStr)}</div>
+        <div class="hana-dismissed-card-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+        <div class="hana-dismissed-card-sender">${escapeHtml(email.sender || '')}</div>
+        ${truncatedReason ? `<span class="hana-dismissed-reason-pill">${escapeHtml(truncatedReason)}</span>` : ''}
+        <div style="margin-top:8px">
+          <button class="dismissed-review-restore-btn" style="width:100%">Restore to inbox</button>
+        </div>
+      `;
+      card.querySelector('.dismissed-review-restore-btn').addEventListener('click', async () => {
+        await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/restore`, { method: 'POST' });
+        card.remove();
+        showToast('Email restored to inbox');
+        if (!list.querySelector('.hana-dismissed-card')) {
+          list.innerHTML = '<div class="empty-state">Nothing here — Hana hasn\'t dismissed anything recently, or everything looks right.</div>';
+        }
+      });
+      list.appendChild(card);
+    });
+  } catch (e) {
+    list.innerHTML = '<div class="empty-state">Could not load dismissed emails.</div>';
+  }
+}
+
+async function loadFilesList() {
+  const content = document.getElementById('files-list-content');
+  content.innerHTML = '<p class="empty-state">Loading files…</p>';
+  try {
+    const res = await fetch(`${BACKEND_URL}/files`);
+    const data = await res.json();
+    _allFiles = data.files || [];
+    renderFilesList(_allFiles);
+  } catch (e) {
+    content.innerHTML = '<p class="empty-state">Could not load files.</p>';
+  }
+}
+
+function renderFilesList(files) {
+  const content = document.getElementById('files-list-content');
+  content.innerHTML = '';
+  if (files.length === 0) {
+    content.innerHTML = '<p class="empty-state">No files yet. Upload one or attach a PDF from an email.</p>';
+    return;
+  }
+  files.forEach(file => {
+    const row = document.createElement('div');
+    row.className = 'file-row';
+    const icon = file.filename.match(/\.pdf$/i) ? '📄' : file.filename.match(/\.(jpg|jpeg|png)$/i) ? '🖼️' : '📎';
+    const size = file.size_bytes > 1024 * 1024
+      ? `${(file.size_bytes / 1024 / 1024).toFixed(1)} MB`
+      : `${Math.round(file.size_bytes / 1024)} KB`;
+    const date = file.uploaded_at ? new Date(file.uploaded_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+    const source = file.source === 'email' ? 'from email' : 'uploaded';
+    row.innerHTML = `
+      <span class="file-row-icon">${icon}</span>
+      <div class="file-row-info">
+        <div class="file-row-name" title="${escapeHtml(file.filename)}">${escapeHtml(file.filename)}</div>
+        <div class="file-row-meta">${source} · ${size}${date ? ' · ' + date : ''}</div>
+      </div>
+      <div class="file-row-actions">
+        <button class="file-view-btn">View</button>
+        <button class="file-delete-btn">Delete</button>
+      </div>
+    `;
+    row.querySelector('.file-view-btn').addEventListener('click', async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/files/${encodeURIComponent(file.file_id)}/url`);
+        const data = await res.json();
+        if (data.url) window.open(data.url, '_blank');
+        else showToast('Could not generate link');
+      } catch (e) { showToast('Error opening file'); }
+    });
+    row.querySelector('.file-delete-btn').addEventListener('click', async () => {
+      if (!confirm(`Delete "${file.filename}"?`)) return;
+      try {
+        await fetch(`${BACKEND_URL}/files/${encodeURIComponent(file.file_id)}`, { method: 'DELETE' });
+        showToast('File deleted');
+        loadFilesList();
+      } catch (e) { showToast('Error deleting file'); }
+    });
+    content.appendChild(row);
+  });
+}
+
+function filterFilesList() {
+  const q = (document.getElementById('files-search').value || '').toLowerCase();
+  if (!q) { renderFilesList(_allFiles); return; }
+  const filtered = _allFiles.filter(f =>
+    f.filename.toLowerCase().includes(q) ||
+    (f.content_text || '').toLowerCase().includes(q)
+  );
+  renderFilesList(filtered);
+}
+
+async function handleFileUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  showToast('Uploading…');
+  try {
+    const res = await fetch(`${BACKEND_URL}/files/upload`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.error) { showToast(`Error: ${data.error}`); return; }
+    showToast(`Uploaded: ${data.filename}`);
+    loadFilesList();
+  } catch (e) {
+    showToast('Upload failed');
+  }
+}
+

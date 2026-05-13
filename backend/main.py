@@ -6,7 +6,6 @@ from flask_cors import CORS
 from google.cloud import firestore
 from mediator import process_message
 from logger import log_action, get_recent_actions, get_action_summary, get_recent_decisions
-from prompts import ONBOARDING_SYSTEM_PROMPT
 
 app = Flask(__name__)
 CORS(app)
@@ -68,6 +67,126 @@ def _is_vague_summary(summary):
     return False
 
 
+def _get_email_intent(db) -> str:
+    """Load email_intent string from Firestore settings."""
+    try:
+        doc = db.collection('settings').document('email_intent').get()
+        return (doc.to_dict() or {}).get('intent', '') if doc.exists else ''
+    except Exception as e:
+        print(f"[email_intent] load error: {e}")
+        return ''
+
+
+def _get_blocked_senders_set(db) -> set:
+    doc = db.collection('settings').document('blocked_senders').get()
+    addresses = doc.to_dict().get('addresses', []) if doc.exists else []
+    return {a.lower() for a in addresses}
+
+
+def _get_permitted_senders_list(db) -> list:
+    doc = db.collection('settings').document('email_filters').get()
+    return [a.lower() for a in (doc.to_dict().get('addresses', []) if doc.exists else [])]
+
+
+def _get_excluded_keywords(db) -> list:
+    doc = db.collection('settings').document('exclude_keyword_filters').get()
+    return [kw.lower() for kw in (doc.to_dict().get('keywords', []) if doc.exists else [])]
+
+
+def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, limit=20, excluded_keywords=None):
+    """Evaluate intent for emails missing a verdict. Mutates emails in place."""
+    from email_scanner import evaluate_email_intent
+    needs_eval = [e for e in emails if 'verdict' not in e][:limit]
+    if not needs_eval:
+        return
+    permitted_set = set(permitted_list)
+    for e in needs_eval:
+        try:
+            result = evaluate_email_intent(e, email_intent, blocked_set, permitted_set, excluded_keywords=excluded_keywords)
+            e['verdict'] = result['verdict']
+            e['verdict_confidence'] = result['confidence']
+            e['verdict_reason'] = result['reason']
+            if result['verdict'] == 'blocked':
+                e['dismissed_by'] = 'hana'
+        except Exception as ex:
+            print(f"[intent_eval] error for {e.get('id')}: {ex}")
+            e['verdict'] = 'uncertain'
+
+
+def _force_reevaluate_all_emails(emails, email_intent, excluded_keywords, blocked_set, permitted_set):
+    """Re-evaluate ALL emails (ignoring existing verdicts) using batched Gemini calls.
+
+    Mutates emails in place. Returns counts dict: {total, permitted, uncertain, blocked}.
+    """
+    from email_scanner import batch_evaluate_emails_intent
+    results = batch_evaluate_emails_intent(
+        emails, email_intent,
+        excluded_keywords=excluded_keywords,
+        blocked_senders=blocked_set,
+        permitted_senders=permitted_set,
+    )
+    counts = {'total': len(emails), 'permitted': 0, 'uncertain': 0, 'blocked': 0}
+    for e in emails:
+        email_id = e.get('id', '')
+        r = results.get(email_id)
+        if r:
+            new_verdict = r['verdict']
+            e['verdict'] = new_verdict
+            e['verdict_reason'] = r['reason']
+            e.pop('verdict_confidence', None)
+            if new_verdict == 'blocked':
+                e['dismissed_by'] = 'hana'
+            elif e.get('dismissed_by') == 'hana':
+                e.pop('dismissed_by', None)
+            counts[new_verdict] = counts.get(new_verdict, 0) + 1
+        else:
+            counts[e.get('verdict', 'uncertain')] = counts.get(e.get('verdict', 'uncertain'), 0) + 1
+    return counts
+
+
+def _auto_save_pdf_attachments(emails, db):
+    """For permitted emails with raw PDF bytes, save to GCS and write Firestore metadata."""
+    from gcs import upload_file
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    for e in emails:
+        if e.get('verdict') != 'permitted':
+            continue
+        for att in e.get('attachments', []):
+            b64 = att.pop('_pdf_bytes_b64', None)
+            size = att.pop('_pdf_size', 0)
+            if not b64:
+                continue
+            try:
+                file_id = str(_uuid.uuid4())
+                gcs_path = f"files/{file_id}_{att['filename']}"
+                pdf_bytes = __import__('base64').b64decode(b64)
+                if not upload_file(pdf_bytes, gcs_path, 'application/pdf'):
+                    continue
+                db.collection('hana_files').document(file_id).set({
+                    'file_id': file_id,
+                    'filename': att['filename'],
+                    'source': 'email',
+                    'email_id': e['id'],
+                    'uploaded_at': datetime.now(timezone.utc).isoformat(),
+                    'size_bytes': size,
+                    'gcs_path': gcs_path,
+                    'content_text': att.get('extracted_text', '')[:8000],
+                })
+                print(f"[files] auto-saved {att['filename']} from email {e['id']}")
+            except Exception as ex:
+                print(f"[files] auto-save error for {att.get('filename')}: {ex}")
+
+
+def _strip_raw_bytes(emails):
+    """Remove in-memory PDF bytes before writing emails to GCS."""
+    for e in emails:
+        for att in e.get('attachments', []):
+            att.pop('_pdf_bytes_b64', None)
+            att.pop('_pdf_size', None)
+
+
 def _backfill(sender_filter=None, keyword_filter=None):
     """Scan the last 90 days for a newly added sender or keyword and merge into stored emails."""
     try:
@@ -96,14 +215,16 @@ def chat():
     user_email = data.get('user_email') or user
     message = data.get('message')
     conversation_id = data.get('conversation_id') or str(uuid.uuid4())
+    voice_mode = bool(data.get('voice_mode', False))
 
     if not user or not message:
         return jsonify({'error': 'Missing user or message'}), 400
 
     history = data.get('history', [])
-    reply = process_message(user, message, history, user_email=user_email, conversation_id=conversation_id)
+    reply, actions = process_message(user, message, history, user_email=user_email, conversation_id=conversation_id, voice_mode=voice_mode)
     return jsonify({
         'reply': reply,
+        'actions': actions,
         'model': 'gemini-2.5-flash'
     })
 
@@ -174,6 +295,7 @@ def get_emails():
     db = get_db()
     doc = db.collection('settings').document('email_filters').get()
     filters = doc.to_dict().get('addresses', []) if doc.exists else []
+    print(f"[/emails] sender_filters from Firestore: {filters}")
 
     config = read_json('saucer-config.json', {})
     last_sync = config.get('last_sync_timestamp')
@@ -206,10 +328,22 @@ def get_emails():
         if e['id'] not in dismissed_set or (e.get('date') or '') >= ttl_cutoff
     ]
 
-    write_json('saucer-emails.json', merged)
-
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
     write_json('saucer-config.json', config)
+
+    # Intent-based filtering: evaluate emails that don't have a verdict yet
+    email_intent = _get_email_intent(db)
+    blocked_set = _get_blocked_senders_set(db)
+    permitted_list = _get_permitted_senders_list(db)
+    excluded_keywords = _get_excluded_keywords(db)
+    _run_intent_eval_batch(merged, email_intent, blocked_set, permitted_list, excluded_keywords=excluded_keywords)
+
+    # Auto-save PDF attachments from newly permitted emails (needs raw bytes)
+    _auto_save_pdf_attachments(merged, db)
+
+    # Strip raw bytes and write to GCS
+    _strip_raw_bytes(merged)
+    write_json('saucer-emails.json', merged)
 
     # Generate summaries for emails that lack one or have a vague/short one (cap at 5 per request)
     to_summarize = [e for e in merged if _is_vague_summary(e.get('summary'))][:5]
@@ -243,15 +377,13 @@ def get_emails():
         visible = [e for e in visible if not _matches_exclude(e)]
         print(f"[/emails] exclude filter: {before_count} -> {len(visible)} emails")
 
-    blocked_doc = db.collection('settings').document('blocked_senders').get()
-    blocked_senders = {a.lower() for a in blocked_doc.to_dict().get('addresses', [])} if blocked_doc.exists else set()
-    if blocked_senders:
-        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_senders
-                   and e.get('sender', '').lower() not in blocked_senders]
+    # Hard block: blocked senders always hidden
+    if blocked_set:
+        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
+                   and e.get('sender', '').lower() not in blocked_set]
 
-    blocked_topics_by_sender = _load_blocked_topics_by_sender(db)
-    if blocked_topics_by_sender:
-        visible = [e for e in visible if not _topic_blocked(e, blocked_topics_by_sender)]
+    # Intent verdict: only show permitted and uncertain (hide blocked)
+    visible = [e for e in visible if e.get('verdict', 'permitted') != 'blocked']
 
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))
@@ -314,11 +446,13 @@ def get_cached_emails():
             return any(kw in haystack for kw in exclude_keywords)
         visible = [e for e in visible if not _matches_exclude_cached(e)]
 
-    blocked_doc = db.collection('settings').document('blocked_senders').get()
-    blocked_senders = {a.lower() for a in blocked_doc.to_dict().get('addresses', [])} if blocked_doc.exists else set()
-    if blocked_senders:
-        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_senders
-                   and e.get('sender', '').lower() not in blocked_senders]
+    blocked_set = _get_blocked_senders_set(db)
+    if blocked_set:
+        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
+                   and e.get('sender', '').lower() not in blocked_set]
+
+    # Intent verdict: only show permitted and uncertain
+    visible = [e for e in visible if e.get('verdict', 'permitted') != 'blocked']
 
     proposals = read_json('saucer-proposals.json', {})
     for e in visible:
@@ -354,40 +488,39 @@ def resync_emails():
     stored = read_json('saucer-emails.json', [])
     new_ids = {e['id'] for e in new_emails}
     merged = new_emails + [e for e in stored if e['id'] not in new_ids]
-    write_json('saucer-emails.json', merged)
 
     config = read_json('saucer-config.json', {})
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
     write_json('saucer-config.json', config)
 
+    # Force re-evaluate ALL emails against current intent (not just new/unverdicted ones)
+    email_intent = _get_email_intent(db)
+    blocked_set = _get_blocked_senders_set(db)
+    permitted_list = _get_permitted_senders_list(db)
+    excluded_keywords = _get_excluded_keywords(db)
+    eval_counts = _force_reevaluate_all_emails(merged, email_intent, excluded_keywords, blocked_set, set(permitted_list))
+    print(f"[resync] re-eval complete: {eval_counts}")
+    _auto_save_pdf_attachments(merged, db)
+    _strip_raw_bytes(merged)
+    write_json('saucer-emails.json', merged)
+
     dismissed = set(read_json('saucer-dismissed.json', []))
     reviewed = set(read_json('saucer-reviewed.json', []))
     visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
 
-    excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
-    exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
-    if exclude_keywords:
-        def _matches_exclude_resync(e):
-            haystack = ' '.join([
-                e.get('subject', ''),
-                e.get('sender', ''),
-                (e.get('body', '') or e.get('snippet', ''))[:500],
-            ]).lower()
-            return any(kw in haystack for kw in exclude_keywords)
-        visible = [e for e in visible if not _matches_exclude_resync(e)]
+    # excluded_keywords already applied during _force_reevaluate_all_emails; use verdict to filter
+    if blocked_set:
+        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
+                   and e.get('sender', '').lower() not in blocked_set]
 
-    blocked_doc = db.collection('settings').document('blocked_senders').get()
-    blocked_senders = {a.lower() for a in blocked_doc.to_dict().get('addresses', [])} if blocked_doc.exists else set()
-    if blocked_senders:
-        visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_senders
-                   and e.get('sender', '').lower() not in blocked_senders]
+    visible = [e for e in visible if e.get('verdict', 'permitted') != 'blocked']
 
     proposals_data = read_json('saucer-proposals.json', {})
     for e in visible:
         all_props = proposals_data.get(e['id'])
         if all_props is not None:
             e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
-    return jsonify({'emails': visible, 'synced': len(new_emails)})
+    return jsonify({'emails': visible, 'synced': len(new_emails), 'eval_counts': eval_counts})
 
 
 # DEPRECATED: proposals flow replaced by direct Google Doc writes with source:ai-suggested
@@ -497,6 +630,13 @@ def dismiss_email(email_id):
     if email_id not in dismissed:
         dismissed.append(email_id)
         write_json('saucer-dismissed.json', dismissed)
+    # Mark dismissed_by='user' on the email object
+    emails = read_json('saucer-emails.json', [])
+    for e in emails:
+        if e['id'] == email_id:
+            e['dismissed_by'] = 'user'
+            write_json('saucer-emails.json', emails)
+            break
     user = _req_user()
     log_action(user, 'email_dismissed', {'email_id': email_id}, actor='user')
     return jsonify({'ok': True})
@@ -660,6 +800,325 @@ def remove_blocked_sender(email):
     )
     user = _req_user()
     log_action(user, 'sender_unblocked', {'sender': email}, actor='user')
+    return jsonify({'ok': True})
+
+
+# ── Email Intent ─────────────────────────────────────────────────────────────
+
+@app.route('/email-intent', methods=['GET'])
+def get_email_intent():
+    db = get_db()
+    return jsonify({'intent': _get_email_intent(db)})
+
+
+@app.route('/email-intent', methods=['POST'])
+def save_email_intent():
+    from datetime import datetime, timezone
+    data = request.get_json() or {}
+    intent = (data.get('intent') or '').strip()
+    db = get_db()
+    db.collection('settings').document('email_intent').set({
+        'intent': intent,
+        'last_updated': datetime.now(timezone.utc).isoformat(),
+    })
+    user = _req_user(data)
+    log_action(user, 'email_intent_saved', {'intent_length': len(intent)}, actor='user')
+    return jsonify({'ok': True})
+
+
+# ── Uncertain email dismiss feedback ──────────────────────────────────────────
+
+@app.route('/emails/<path:email_id>/dismiss-feedback', methods=['POST'])
+def dismiss_email_with_feedback(email_id):
+    from gcs import read_json, write_json
+    from datetime import datetime, timezone
+    data = request.get_json() or {}
+    reason_type = data.get('reason_type', 'free_text')
+    reason_text = data.get('reason_text', '')
+
+    # Dismiss the email
+    dismissed = read_json('saucer-dismissed.json', [])
+    if email_id not in dismissed:
+        dismissed.append(email_id)
+        write_json('saucer-dismissed.json', dismissed)
+
+    # Find email metadata and mark dismissed_by='user'
+    emails = read_json('saucer-emails.json', [])
+    email_meta = {}
+    for e in emails:
+        if e['id'] == email_id:
+            email_meta = e
+            e['dismissed_by'] = 'user'
+            break
+    if email_meta:
+        write_json('saucer-emails.json', emails)
+
+    # Store feedback in Firestore
+    db = get_db()
+    db.collection('hana_filter_feedback').add({
+        'email_id': email_id,
+        'sender': email_meta.get('sender', ''),
+        'subject': email_meta.get('subject', ''),
+        'verdict_was': email_meta.get('verdict', 'uncertain'),
+        'reason_type': reason_type,
+        'reason_text': reason_text,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+    })
+
+    # Save memory note
+    try:
+        from memory import save_note
+        sender_display = email_meta.get('sender', 'unknown sender')
+        subject_display = email_meta.get('subject', 'unknown subject')
+        note_content = (
+            f"Dismissed email from {sender_display} — subject: '{subject_display}'. "
+            f"Reason ({reason_type}): {reason_text}"
+        )
+        save_note('email filtering feedback', note_content)
+    except Exception as e:
+        print(f"[dismiss_feedback] save_note error: {e}")
+
+    user = _req_user(data)
+    log_action(user, 'email_dismissed_with_feedback', {'email_id': email_id, 'reason_type': reason_type}, actor='user')
+    return jsonify({'ok': True})
+
+
+# ── Emails Hana dismissed ────────────────────────────────────────────────────
+
+@app.route('/emails/hana-dismissed', methods=['GET'])
+def get_hana_dismissed_emails():
+    """Return emails Hana dismissed (dismissed_by=hana AND verdict=blocked), last 90 days, sorted by date desc."""
+    from gcs import read_json
+    from datetime import datetime, timedelta, timezone
+    emails = read_json('saucer-emails.json', [])
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    hana_dismissed = [
+        e for e in emails
+        if e.get('dismissed_by') == 'hana'
+        and e.get('verdict') == 'blocked'
+        and (e.get('date') or '') >= cutoff
+    ]
+    hana_dismissed.sort(key=lambda x: x.get('date', ''), reverse=True)
+    return jsonify({'emails': [{
+        'id': e['id'],
+        'sender': e.get('sender', ''),
+        'subject': e.get('subject', ''),
+        'date': e.get('date', ''),
+        'reason': e.get('verdict_reason', ''),
+    } for e in hana_dismissed]})
+
+
+# ── Dismissed email review (90-day refresh) ───────────────────────────────────
+
+_dismissed_review_cache = {}
+
+
+@app.route('/emails/dismissed-review', methods=['GET'])
+def get_dismissed_review():
+    """Re-evaluate user-dismissed emails from last 90 days against current intent.
+
+    Only shows emails the user explicitly dismissed (dismissed_by='user' or legacy entries
+    in saucer-dismissed.json without dismissed_by='hana'). Hana-dismissed emails have their
+    own endpoint: GET /emails/hana-dismissed.
+    """
+    from gcs import read_json
+    from email_scanner import evaluate_email_intent
+    from datetime import datetime, timedelta, timezone
+
+    db = get_db()
+    email_intent = _get_email_intent(db)
+    blocked_set = _get_blocked_senders_set(db)
+    permitted_list = _get_permitted_senders_list(db)
+    excluded_keywords = _get_excluded_keywords(db)
+
+    if not email_intent:
+        return jsonify({'emails': [], 'message': 'No intent description set — add one in Email Filters to use this feature.'})
+
+    dismissed_ids = set(read_json('saucer-dismissed.json', []))
+    all_emails = read_json('saucer-emails.json', [])
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    # Only user-dismissed emails (not Hana's verdict=blocked ones)
+    candidates = [
+        e for e in all_emails
+        if e['id'] in dismissed_ids
+        and e.get('dismissed_by') != 'hana'
+        and (e.get('date') or '') >= cutoff
+    ]
+
+    results = []
+    permitted_set = set(permitted_list)
+    for e in candidates:
+        cache_key = f"{e['id']}:{email_intent[:50]}"
+        if cache_key in _dismissed_review_cache:
+            verdict_info = _dismissed_review_cache[cache_key]
+        else:
+            verdict_info = evaluate_email_intent(e, email_intent, blocked_set, permitted_set, excluded_keywords=excluded_keywords)
+            _dismissed_review_cache[cache_key] = verdict_info
+
+        if verdict_info['verdict'] in ('permitted', 'uncertain'):
+            results.append({
+                'id': e['id'],
+                'sender': e.get('sender', ''),
+                'subject': e.get('subject', ''),
+                'date': e.get('date', ''),
+                'review_verdict': verdict_info['verdict'],
+                'review_reason': verdict_info['reason'],
+            })
+
+    results.sort(key=lambda x: x.get('date', ''), reverse=True)
+    return jsonify({'emails': results[:50]})
+
+
+@app.route('/emails/<path:email_id>/topic-phrase', methods=['GET'])
+def get_email_topic_phrase(email_id):
+    """Return a short noun phrase describing the main topic of an email (for dismissal UI)."""
+    from gcs import read_json
+    from email_scanner import extract_topic_noun_phrase
+    emails = read_json('saucer-emails.json', [])
+    email = next((e for e in emails if e['id'] == email_id), None)
+    if not email:
+        return jsonify({'phrase': None})
+    try:
+        phrase = extract_topic_noun_phrase(email)
+        return jsonify({'phrase': phrase})
+    except Exception as e:
+        print(f"[topic-phrase] error: {e}")
+        return jsonify({'phrase': None})
+
+
+@app.route('/emails/<path:email_id>/restore', methods=['POST'])
+def restore_dismissed_email(email_id):
+    """Remove an email from the dismissed list to restore it to the inbox."""
+    from gcs import read_json, write_json
+    dismissed = read_json('saucer-dismissed.json', [])
+    if email_id in dismissed:
+        dismissed.remove(email_id)
+        write_json('saucer-dismissed.json', dismissed)
+    # Clear dismissed_by and reset blocked verdict so the email reappears in inbox
+    emails = read_json('saucer-emails.json', [])
+    for e in emails:
+        if e['id'] == email_id:
+            e.pop('dismissed_by', None)
+            if e.get('verdict') == 'blocked':
+                e['verdict'] = 'uncertain'
+            write_json('saucer-emails.json', emails)
+            break
+    user = _req_user()
+    log_action(user, 'email_restored', {'email_id': email_id}, actor='user')
+    return jsonify({'ok': True})
+
+
+# ── Relevant Files ────────────────────────────────────────────────────────────
+
+_ALLOWED_FILE_TYPES = {
+    'application/pdf': '.pdf',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+}
+_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@app.route('/files', methods=['GET'])
+def list_files():
+    db = get_db()
+    docs = db.collection('hana_files').order_by('uploaded_at', direction=firestore.Query.DESCENDING).stream()
+    files = []
+    for doc in docs:
+        d = doc.to_dict()
+        d['file_id'] = doc.id
+        d.pop('content_text', None)  # don't send full text in list view
+        files.append(d)
+    return jsonify({'files': files})
+
+
+@app.route('/files/upload', methods=['POST'])
+def upload_file_endpoint():
+    from gcs import upload_file
+    from datetime import datetime, timezone
+    import uuid as _uuid
+
+    f = request.files.get('file')
+    if not f:
+        return jsonify({'error': 'No file provided'}), 400
+
+    content_type = f.content_type or 'application/octet-stream'
+    if content_type not in _ALLOWED_FILE_TYPES:
+        # Try to guess from filename
+        fname = f.filename or ''
+        ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+        type_map = {'pdf': 'application/pdf', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                    'png': 'image/png', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}
+        content_type = type_map.get(ext, content_type)
+        if content_type not in _ALLOWED_FILE_TYPES:
+            return jsonify({'error': f'File type not allowed. Supported: PDF, JPG, PNG, DOCX'}), 400
+
+    file_bytes = f.read()
+    if len(file_bytes) > _MAX_FILE_BYTES:
+        return jsonify({'error': 'File exceeds 10 MB limit'}), 400
+
+    file_id = str(_uuid.uuid4())
+    filename = f.filename or f'upload_{file_id}'
+    gcs_path = f"files/{file_id}_{filename}"
+
+    if not upload_file(file_bytes, gcs_path, content_type):
+        return jsonify({'error': 'Upload failed'}), 500
+
+    # Extract text for PDFs
+    content_text = ''
+    if content_type == 'application/pdf':
+        try:
+            import pdfplumber, io as _io
+            with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
+                for page in pdf.pages:
+                    content_text += (page.extract_text() or '') + '\n'
+            content_text = content_text[:8000]
+        except Exception as e:
+            print(f"[files] PDF text extraction error: {e}")
+
+    db = get_db()
+    db.collection('hana_files').document(file_id).set({
+        'file_id': file_id,
+        'filename': filename,
+        'source': 'upload',
+        'uploaded_at': datetime.now(timezone.utc).isoformat(),
+        'size_bytes': len(file_bytes),
+        'gcs_path': gcs_path,
+        'content_text': content_text,
+    })
+
+    user = _req_user()
+    log_action(user, 'file_uploaded', {'filename': filename, 'size': len(file_bytes)}, actor='user')
+    return jsonify({'ok': True, 'file_id': file_id, 'filename': filename})
+
+
+@app.route('/files/<file_id>/url', methods=['GET'])
+def get_file_url(file_id):
+    from gcs import generate_signed_url
+    db = get_db()
+    doc = db.collection('hana_files').document(file_id).get()
+    if not doc.exists:
+        return jsonify({'error': 'File not found'}), 404
+    gcs_path = doc.to_dict().get('gcs_path', '')
+    url = generate_signed_url(gcs_path)
+    if not url:
+        return jsonify({'error': 'Could not generate URL'}), 500
+    return jsonify({'url': url})
+
+
+@app.route('/files/<file_id>', methods=['DELETE'])
+def delete_file_endpoint(file_id):
+    from gcs import delete_file
+    db = get_db()
+    doc = db.collection('hana_files').document(file_id).get()
+    if not doc.exists:
+        return jsonify({'error': 'File not found'}), 404
+    gcs_path = doc.to_dict().get('gcs_path', '')
+    delete_file(gcs_path)
+    db.collection('hana_files').document(file_id).delete()
+    user = _req_user()
+    log_action(user, 'file_deleted', {'file_id': file_id}, actor='user')
     return jsonify({'ok': True})
 
 
@@ -941,63 +1400,13 @@ def get_decisions_recent():
     return jsonify({'decisions': decisions})
 
 
+# DEPRECATED — replaced by memory.py knowledge system (passive learning + save_note).
 @app.route('/onboarding', methods=['POST'])
 def onboarding():
-    import google.generativeai as genai
-    from datetime import datetime, timezone
-    data = request.get_json()
-    user_email = data.get('user_email', '')
-    message = data.get('message', '')
-    history = data.get('history', [])
-
-    db = get_db()
-    saved_profile = {}
-
-    def save_household_profile(
-        family_members: str,
-        shopping_habits: str,
-        role_division: str,
-        communication_preferences: str,
-    ) -> dict:
-        """Save the household profile gathered during the onboarding conversation.
-
-        Args:
-            family_members: Description of family members (names, ages, interests).
-            shopping_habits: Shopping preferences and habits.
-            role_division: Who handles what in the household.
-            communication_preferences: How they prefer to communicate and be notified.
-        """
-        db.collection('household_profile').document(user_email).set({
-            'family_members': family_members,
-            'shopping_habits': shopping_habits,
-            'role_division': role_division,
-            'communication_preferences': communication_preferences,
-            'updated_at': datetime.now(timezone.utc).isoformat(),
-        })
-        saved_profile['saved'] = True
-        return {"message": "Profile saved!"}
-
-    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
-
-    chat_history = []
-    for m in history:
-        role = 'user' if m['role'] == 'user' else 'model'
-        chat_history.append({'role': role, 'parts': [m['content']]})
-
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
-        system_instruction=ONBOARDING_SYSTEM_PROMPT,
-        tools=[save_household_profile],
-    )
-    chat = model.start_chat(history=chat_history, enable_automatic_function_calling=True)
-
-    user_msg = message.strip() if message.strip() else "Let's get started."
-    response = chat.send_message(user_msg)
-
     return jsonify({
-        'reply': response.text,
-        'complete': saved_profile.get('saved', False),
-    })
+        'error': 'This endpoint has been replaced by the Hana memory system. '
+                 'Hana now learns about your household through natural conversation.'
+    }), 410
 
 
 @app.route('/conversation-history', methods=['GET'])
@@ -1241,14 +1650,6 @@ def agent_email_trigger():
     if not new_emails:
         return jsonify({'ok': True})
 
-    # Merge into stored emails so they appear in the app immediately
-    stored = read_json('saucer-emails.json', [])
-    existing_ids = {e['id'] for e in stored}
-    fresh = [e for e in new_emails if e['id'] not in existing_ids]
-    if fresh:
-        write_json('saucer-emails.json', fresh + stored)
-    print(f"[email-trigger] merged {len(fresh)} new emails into saucer-emails.json, total now {len(fresh) + len(stored)}")
-
     # Load filters from Firestore
     db = get_db()
     sender_doc = db.collection('settings').document('email_filters').get()
@@ -1263,13 +1664,39 @@ def agent_email_trigger():
     excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
     exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
 
-    blocked_topics_by_sender = _load_blocked_topics_by_sender(db)
+    email_intent = _get_email_intent(db)
+    blocked_set_trigger = {b.lower() for b in blocked_senders}
+    permitted_set_trigger = set(sender_filters)
+
+    # Run intent eval on new emails before merging
+    if new_emails:
+        from email_scanner import evaluate_email_intent
+        for e in new_emails:
+            if 'verdict' not in e:
+                result = evaluate_email_intent(e, email_intent, blocked_set_trigger, permitted_set_trigger, excluded_keywords=exclude_keywords)
+                e['verdict'] = result['verdict']
+                e['verdict_confidence'] = result['confidence']
+                e['verdict_reason'] = result['reason']
+                if result['verdict'] == 'blocked':
+                    e['dismissed_by'] = 'hana'
+
+    # Auto-save PDFs from permitted emails before stripping bytes
+    _auto_save_pdf_attachments(new_emails, db)
+    _strip_raw_bytes(new_emails)
+
+    # Merge into stored emails so they appear in the app immediately
+    stored = read_json('saucer-emails.json', [])
+    existing_ids = {e['id'] for e in stored}
+    fresh = [e for e in new_emails if e['id'] not in existing_ids]
+    if fresh:
+        write_json('saucer-emails.json', fresh + stored)
+    print(f"[email-trigger] merged {len(fresh)} new emails into saucer-emails.json, total now {len(fresh) + len(stored)}")
 
     def _sender_matches(sender_str):
         raw = sender_str.lower()
         addr = _extract_sender_addr(sender_str)
         matched = any(f in raw or f in addr for f in sender_filters)
-        print(f"[email-trigger] _sender_matches raw={raw!r} addr={addr!r} filters={sender_filters} -> {matched}")
+        print(f"[email-trigger] sender_match check: raw={raw!r} extracted={addr!r} filters={sender_filters} match={matched}")
         return matched
 
     def _keyword_matches(email_dict):
@@ -1283,9 +1710,10 @@ def agent_email_trigger():
         sender_str = email_dict.get('sender', '')
         addr = _extract_sender_addr(sender_str)
         raw = sender_str.lower()
-        blocked_lower = {b.lower() for b in blocked_senders}
-        print(f"[email-trigger] _is_excluded check addr={addr!r} blocked_lower={blocked_lower}")
-        if any(b in raw or b in addr for b in blocked_lower):
+        print(f"[email-trigger] _is_excluded check addr={addr!r} blocked_set={blocked_set_trigger}")
+        if any(b in raw or b in addr for b in blocked_set_trigger):
+            return True
+        if email_dict.get('verdict') == 'blocked':
             return True
         if exclude_keywords:
             haystack = ' '.join([
@@ -1295,20 +1723,18 @@ def agent_email_trigger():
             ]).lower()
             if any(kw in haystack for kw in exclude_keywords):
                 return True
-        if _topic_blocked(email_dict, blocked_topics_by_sender):
-            return True
         return False
 
     for email in new_emails:
         subj = email.get('subject', '(no subject)')
         if _is_excluded(email):
-            print(f"[email-trigger] excluded: {subj}")
+            print(f"[email-trigger] excluded (verdict={email.get('verdict')}): {subj}")
             continue
         if not (_sender_matches(email.get('sender', '')) or _keyword_matches(email)):
             print(f"[email-trigger] no filter match, skipping: {subj}")
             continue
 
-        print(f"[email-trigger] qualifying — spawning agent for: {subj}")
+        print(f"[email-trigger] qualifying (verdict={email.get('verdict')}) — spawning agent for: {subj}")
 
         def _process(e=email):
             try:
@@ -1410,6 +1836,118 @@ def debug_config():
     from gcs import read_json
     config = read_json('saucer-config.json', {})
     return jsonify({'config': config})
+
+
+@app.route('/debug/filters', methods=['GET'])
+def debug_filters():
+    agent_key = os.environ.get('AGENT_KEY', '')
+    provided_key = request.headers.get('X-Agent-Key', '')
+    if not agent_key or provided_key != agent_key:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    from gmail_scanner import build_gmail_query
+    from gcs import read_json
+    from datetime import datetime, timedelta, timezone
+
+    db = get_db()
+
+    sender_doc = db.collection('settings').document('email_filters').get()
+    sender_filters = sender_doc.to_dict().get('addresses', []) if sender_doc.exists else []
+
+    kw_doc = db.collection('settings').document('keyword_filters').get()
+    keyword_filters = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
+
+    excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
+    exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+
+    blocked_doc = db.collection('settings').document('blocked_senders').get()
+    blocked_senders = blocked_doc.to_dict().get('addresses', []) if blocked_doc.exists else []
+
+    config = read_json('saucer-config.json', {})
+    last_sync = config.get('last_sync_timestamp')
+    if last_sync is None:
+        after_ts = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
+    else:
+        after_ts = last_sync
+
+    effective_senders = (sender_filters + ['me']) if sender_filters else None
+    query = build_gmail_query(
+        sender_filter=effective_senders,
+        keyword_filter=keyword_filters if keyword_filters else None,
+        after_timestamp=after_ts,
+    )
+
+    print(f"[debug/filters] sender_filters={sender_filters}")
+    print(f"[debug/filters] keyword_filters={keyword_filters}")
+    print(f"[debug/filters] exclude_keywords={exclude_keywords}")
+    print(f"[debug/filters] blocked_senders={blocked_senders}")
+    print(f"[debug/filters] effective_gmail_query={query!r}")
+
+    return jsonify({
+        'sender_filters': sender_filters,
+        'keyword_filters': keyword_filters,
+        'exclude_keywords': exclude_keywords,
+        'blocked_senders': blocked_senders,
+        'effective_gmail_query': query,
+    })
+
+
+@app.route('/emails/backfill-sender', methods=['POST'])
+def backfill_sender():
+    agent_key = os.environ.get('AGENT_KEY', '')
+    provided_key = request.headers.get('X-Agent-Key', '')
+    if not agent_key or provided_key != agent_key:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.get_json() or {}
+    sender = (data.get('sender') or '').strip().lower()
+    if not sender:
+        return jsonify({'error': 'Missing sender'}), 400
+
+    print(f"[backfill-sender] starting 90-day backfill for sender={sender!r}")
+    _backfill(sender_filter=[sender])
+    print(f"[backfill-sender] done for sender={sender!r}")
+    return jsonify({'ok': True, 'sender': sender})
+
+
+@app.route('/hana/question', methods=['GET'])
+def get_hana_question():
+    """Return the current queued question if ready. Frontend polls this."""
+    from memory import get_queued_question
+    q = get_queued_question()
+    if not q:
+        return jsonify({"has_question": False})
+    return jsonify({
+        "has_question": True,
+        "question": q["question"],
+        "queued_at": q["queued_at"].isoformat() if hasattr(q["queued_at"], "isoformat") else str(q["queued_at"])
+    })
+
+
+@app.route('/hana/question/snooze', methods=['POST'])
+def snooze_hana_question():
+    """Called when user opens chat to talk about something else."""
+    from memory import snooze_question
+    return jsonify(snooze_question(days=3))
+
+
+@app.route('/hana/question/clear', methods=['POST'])
+def clear_hana_question():
+    from memory import clear_question
+    return jsonify(clear_question())
+
+
+@app.route('/hana/notes', methods=['GET'])
+def get_hana_notes():
+    """Return all notes for display in the UI."""
+    from memory import list_notes
+    return jsonify({"notes": list_notes()})
+
+
+@app.route('/hana/notes/<topic_slug>', methods=['DELETE'])
+def delete_hana_note(topic_slug):
+    from memory import delete_note
+    return jsonify(delete_note(topic_slug))
 
 
 @app.route('/health', methods=['GET'])

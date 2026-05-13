@@ -607,7 +607,7 @@ def _make_get_decisions_tool(user_email: str):
     return get_gemini_decisions
 
 
-def process_message(user, message, history=None, user_email=None, conversation_id=None):
+def process_message(user, message, history=None, user_email=None, conversation_id=None, voice_mode=False):
     user_email = user_email or user
     doc_contents = read_doc()
     today = datetime.now(_tz())
@@ -638,6 +638,8 @@ def process_message(user, message, history=None, user_email=None, conversation_i
         full_system += f"\n\n{action_history}"
     if gemini_decisions_ctx:
         full_system += f"\n\n{gemini_decisions_ctx}"
+    if voice_mode:
+        full_system += "\n\nVOICE MODE: The user is listening, not reading. Respond in natural spoken sentences. No bullet points, no markdown, no lists. Keep responses concise — aim for 2-3 sentences maximum unless the question genuinely requires more. Speak as if talking to someone, not writing to them."
     full_system += f"\n\nCURRENT DOC CONTENTS:\n{doc_contents}"
 
     context_parts = ['task list', "today's date"]
@@ -667,13 +669,66 @@ def process_message(user, message, history=None, user_email=None, conversation_i
     complete_tool = _make_complete_task_tool(user_email, message, context_available)
     decisions_tool = _make_get_decisions_tool(user_email)
 
+    _tool_actions = []
+
+    def save_note_tool(topic: str, content: str):
+        """Save or update a note about something Hana has learned about this household.
+
+        Call this silently at the end of any conversation where you've learned
+        something worth keeping -- a family detail, a preference, a routine,
+        a role clarification. Do NOT announce to the user that you're saving a note.
+        Do NOT ask permission. Just save it.
+
+        Topic is freeform -- invent a name that captures the subject naturally.
+        Content should be warm, first-person prose as if writing notes for yourself.
+        Do not save sensitive personal information (medical details, financial specifics,
+        relationship conflict). Note such topics obliquely if at all.
+
+        Args:
+            topic: Short descriptive name for the subject (e.g. 'kids routines',
+                   'grocery preferences', 'role division', 'Luis the cleaner').
+            content: What you learned, written in natural prose.
+        """
+        from memory import save_note
+        result = save_note(topic, content)
+        _tool_actions.append('noted')
+        return result
+
+    def search_memory_tool(query: str):
+        """Search Hana's notes for information relevant to a query.
+
+        Call this when you need household context that isn't in the current
+        conversation -- before assigning a task, answering a question about
+        family routines, or deciding who should handle something.
+        Do not preload notes. Fetch only when you need them.
+
+        Args:
+            query: A few words describing what you're looking for
+                   (e.g. 'school pickup', 'food allergies', 'Dan preferences').
+        """
+        from memory import search_memory
+        return search_memory(query)
+
+    def clear_question_tool():
+        """Clear the queued question from the question queue.
+
+        Call this after you have successfully asked your queued question and
+        received a satisfactory answer from the user. This removes the question
+        from the queue and prevents it from pulsing the chat button again.
+        Do NOT call this if the user redirected to another topic without answering.
+        """
+        from memory import clear_question
+        return clear_question()
+
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
-        tools=[add_todo_tool, reassign_tool, complete_tool, decisions_tool, search_emails]
+        tools=[add_todo_tool, reassign_tool, complete_tool, decisions_tool, search_emails,
+               save_note_tool, search_memory_tool, clear_question_tool]
     )
 
     chat = model.start_chat(history=chat_history, enable_automatic_function_calling=True)
+    history_len_before = len(chat.history)
     response = chat.send_message(f"{user}: {message}")
 
     try:
@@ -688,19 +743,26 @@ def process_message(user, message, history=None, user_email=None, conversation_i
 
     # The google.generativeai SDK (deprecated) sometimes returns a response object
     # pointing at an intermediate function-call turn rather than the final text turn.
-    # Walk chat.history backwards for the last model turn that actually has text.
+    # Only scan turns added during THIS exchange (after history_len_before) to avoid
+    # accidentally returning a reply from a prior turn.
     try:
         reply_text = response.text
-    except ValueError:
+    except ValueError as _ve:
+        print(f"[mediator] response.text ValueError: {_ve}")
         reply_text = ""
-        for turn in reversed(chat.history):
+        new_turns = list(reversed(chat.history[history_len_before:]))
+        for turn in new_turns:
             if turn.role == 'model':
                 text = ''.join(getattr(p, 'text', '') or '' for p in turn.parts)
                 if text:
                     reply_text = text
                     break
         if not reply_text:
-            reply_text = "Hmm, I had trouble with that one. Mind trying again?"
+            # Tools ran successfully but model produced no text — use a short default
+            if _tool_actions:
+                reply_text = "Got it."
+            else:
+                reply_text = "Hmm, I had trouble with that one. Mind trying again?"
 
     if conversation_id and reply_text:
         import threading
@@ -711,4 +773,4 @@ def process_message(user, message, history=None, user_email=None, conversation_i
             daemon=True,
         ).start()
 
-    return reply_text
+    return reply_text, list(set(_tool_actions))

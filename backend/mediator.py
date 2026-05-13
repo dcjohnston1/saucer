@@ -343,33 +343,49 @@ def _parse_task_load(doc_contents: str) -> str:
 
 
 def _load_calendar_context(today: datetime) -> str:
-    """Fetch the next 7 days of calendar events for Dan and Emily."""
+    """Fetch the next 14 days of calendar events for Dan and Emily."""
     try:
         from gcalendar import get_events
         start_iso = today.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        end_iso = (today + timedelta(days=7)).replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
-        lines = ['CALENDAR — NEXT 7 DAYS:']
+        end_iso = (today + timedelta(days=14)).replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+        lines = ['CALENDAR — NEXT 14 DAYS:']
+
+        def _fmt_event_time(e):
+            start_val = e.get('start') or ''
+            if e.get('all_day') or len(start_val) <= 10:
+                return start_val[:10]
+            try:
+                from datetime import datetime as _dt
+                # Replace Z suffix for Python <3.11 compatibility
+                normalized = start_val.replace('Z', '+00:00')
+                dt = _dt.fromisoformat(normalized)
+                local_dt = dt.astimezone(_tz())
+                return local_dt.strftime('%Y-%m-%d %-I:%M %p')
+            except Exception:
+                return start_val[:16]
 
         try:
             events = get_events(start_iso, end_iso)
             if events:
                 lines.append("  Dan's calendar:")
-                for e in events[:10]:
-                    lines.append(f"    • {(e['start'] or '')[:10]}: {e['title']}")
+                for e in events[:20]:
+                    lines.append(f"    • {_fmt_event_time(e)}: {e['title']}")
             else:
-                lines.append("  Dan's calendar: no events this week")
-        except Exception:
+                lines.append("  Dan's calendar: no events in the next 14 days")
+        except Exception as ex:
+            print(f'[mediator] Dan calendar error: {ex}')
             lines.append("  Dan's calendar: unavailable")
 
         try:
             events = get_events(start_iso, end_iso, calendar_id='emily.osteen.johnston@gmail.com')
             if events:
                 lines.append("  Emily's calendar:")
-                for e in events[:10]:
-                    lines.append(f"    • {(e['start'] or '')[:10]}: {e['title']}")
+                for e in events[:20]:
+                    lines.append(f"    • {_fmt_event_time(e)}: {e['title']}")
             else:
-                lines.append("  Emily's calendar: no events this week")
-        except Exception:
+                lines.append("  Emily's calendar: no events in the next 14 days")
+        except Exception as ex:
+            print(f'[mediator] Emily calendar error: {ex}')
             lines.append("  Emily's calendar: not yet connected")
 
         return '\n'.join(lines)
@@ -653,7 +669,7 @@ def process_message(user, message, history=None, user_email=None, conversation_i
         context_parts.append('recent activity summary')
     context_parts.append('per-user task counts')
     if calendar_ctx:
-        context_parts.append('calendar events (next 7 days)')
+        context_parts.append('calendar events (next 14 days)')
     if action_history:
         context_parts.append('individual action history')
     context_available = ', '.join(context_parts)

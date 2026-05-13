@@ -133,6 +133,23 @@ def update_event(event_id, title=None, start_date=None, end_date=None, time_str=
     service.events().update(calendarId=CALENDAR_ID, eventId=event_id, body=event).execute()
 
 
+def update_event_assignee(event_id, assignee_label):
+    """Update only the 'Assigned to:' line in a calendar event's description.
+
+    assignee_label should be 'Daniel', 'Emily', 'Both', or None to clear.
+    """
+    service = get_service()
+    event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+
+    description = event.get('description') or ''
+    lines = [l for l in description.splitlines() if not l.startswith('Assigned to:')]
+    if assignee_label:
+        lines.append(f'Assigned to: {assignee_label}')
+    event['description'] = '\n'.join(lines).strip()
+
+    service.events().update(calendarId=CALENDAR_ID, eventId=event_id, body=event).execute()
+
+
 def delete_event(event_id):
     """Delete a calendar event."""
     service = get_service()

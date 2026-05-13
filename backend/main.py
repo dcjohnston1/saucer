@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import uuid
@@ -145,9 +146,12 @@ def _force_reevaluate_all_emails(emails, email_intent, excluded_keywords, blocke
 
 
 def _auto_save_pdf_attachments(emails, db):
-    """For permitted emails with raw PDF bytes, save to GCS and write Firestore metadata."""
+    """For permitted emails with raw attachment bytes, save to GCS and write Firestore metadata.
+
+    Uses a deterministic document ID (MD5 of email_id:filename) so reprocessing
+    the same email is idempotent — no duplicate entries, no composite index needed.
+    """
     from gcs import upload_file
-    import uuid as _uuid
     from datetime import datetime, timezone
 
     for e in emails:
@@ -155,18 +159,20 @@ def _auto_save_pdf_attachments(emails, db):
             continue
         for att in e.get('attachments', []):
             b64 = att.pop('_pdf_bytes_b64', None)
-            size = att.pop('_pdf_size', 0)
+            size = att.pop('_file_size', att.pop('_pdf_size', 0))
             if not b64:
                 continue
             try:
-                file_id = str(_uuid.uuid4())
-                gcs_path = f"files/{file_id}_{att['filename']}"
-                pdf_bytes = __import__('base64').b64decode(b64)
-                if not upload_file(pdf_bytes, gcs_path, 'application/pdf'):
+                filename = att['filename']
+                content_type = att.get('mime', 'application/pdf')
+                file_id = hashlib.md5(f"{e['id']}:{filename}".encode()).hexdigest()
+                gcs_path = f"files/{file_id}_{filename}"
+                file_bytes = __import__('base64').b64decode(b64)
+                if not upload_file(file_bytes, gcs_path, content_type):
                     continue
                 db.collection('hana_files').document(file_id).set({
                     'file_id': file_id,
-                    'filename': att['filename'],
+                    'filename': filename,
                     'source': 'email',
                     'email_id': e['id'],
                     'uploaded_at': datetime.now(timezone.utc).isoformat(),
@@ -174,16 +180,18 @@ def _auto_save_pdf_attachments(emails, db):
                     'gcs_path': gcs_path,
                     'content_text': att.get('extracted_text', '')[:8000],
                 })
-                print(f"[files] auto-saved {att['filename']} from email {e['id']}")
+                att['file_id'] = file_id
+                print(f"[files] auto-saved {filename} from email {e['id']}")
             except Exception as ex:
                 print(f"[files] auto-save error for {att.get('filename')}: {ex}")
 
 
 def _strip_raw_bytes(emails):
-    """Remove in-memory PDF bytes before writing emails to GCS."""
+    """Remove in-memory attachment bytes before writing emails to GCS."""
     for e in emails:
         for att in e.get('attachments', []):
             att.pop('_pdf_bytes_b64', None)
+            att.pop('_file_size', None)
             att.pop('_pdf_size', None)
 
 
@@ -345,8 +353,8 @@ def get_emails():
     _strip_raw_bytes(merged)
     write_json('saucer-emails.json', merged)
 
-    # Generate summaries for emails that lack one or have a vague/short one (cap at 5 per request)
-    to_summarize = [e for e in merged if _is_vague_summary(e.get('summary'))][:5]
+    # Generate summaries for emails that lack one or have a vague/short one (cap at 10 per request)
+    to_summarize = [e for e in merged if _is_vague_summary(e.get('summary'))][:10]
     if to_summarize:
         from email_scanner import summarize_emails
         summaries = summarize_emails(to_summarize)
@@ -658,11 +666,42 @@ def review_email(email_id):
 @app.route('/reviewed-emails', methods=['GET'])
 def get_reviewed_emails():
     from gcs import read_json
-    reviewed_ids = read_json('saucer-reviewed.json', [])
+    from datetime import datetime, timedelta, timezone
+
+    since_30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    actions = get_recent_actions(action_type=None, limit=200, since=since_30)
+
+    ACTION_LABEL_MAP = {
+        'email_dismissed': 'Dismissed by you',
+        'email_reviewed': 'Marked reviewed',
+        'email_restored': 'Restored from dismissed',
+    }
+    email_action_map = {}
+    for a in reversed(actions):
+        eid = a.get('metadata', {}).get('email_id') or a.get('email_id')
+        if not eid:
+            continue
+        atype = a.get('action_type', '')
+        if atype in ACTION_LABEL_MAP:
+            email_action_map[eid] = {
+                'label': ACTION_LABEL_MAP[atype],
+                'timestamp': a.get('timestamp', ''),
+                'actor': a.get('actor', 'user'),
+            }
+
     all_emails = read_json('saucer-emails.json', [])
     email_map = {e['id']: e for e in all_emails}
-    result = [email_map[rid] for rid in reviewed_ids if rid in email_map]
-    return jsonify({'emails': result[:30]})
+
+    result = []
+    for eid, action_info in email_action_map.items():
+        if eid in email_map:
+            entry = dict(email_map[eid])
+            entry['_action_label'] = action_info['label']
+            entry['_action_timestamp'] = action_info['timestamp']
+            result.append(entry)
+
+    result.sort(key=lambda x: x.get('_action_timestamp', ''), reverse=True)
+    return jsonify({'emails': result[:60], 'window_days': 30})
 
 
 @app.route('/doc/task', methods=['DELETE'])
@@ -987,6 +1026,43 @@ def get_email_topic_phrase(email_id):
         return jsonify({'phrase': None})
 
 
+@app.route('/emails/<path:email_id>/highlights', methods=['POST'])
+def get_email_highlights(email_id):
+    """Return up to 3 short phrases from the email body worth highlighting, given Hana's notes as context."""
+    body_text = (request.json or {}).get('body_text', '')
+    if not body_text:
+        return jsonify({'highlights': []})
+    try:
+        from gcs import read_json
+        import google.generativeai as genai
+        notes_data = read_json('hana-notes.json', {})
+        notes_text = notes_data.get('notes', '') if isinstance(notes_data, dict) else ''
+        context_block = f"Hana's notes about this household:\n{notes_text}\n\n" if notes_text else ''
+        prompt = (
+            f"{context_block}"
+            f"Email body:\n{body_text}\n\n"
+            "Identify up to 3 short phrases (2–6 words each) in this email body that are most relevant "
+            "to the household context above. Return only a JSON array of exact substrings from the email body. "
+            "Example: [\"dentist appointment Thursday\", \"pick up kids\"]. "
+            "Return [] if nothing stands out."
+        )
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+        import json as _json
+        text = response.text.strip()
+        if text.startswith('```'):
+            text = text.split('```')[1]
+            if text.startswith('json'):
+                text = text[4:]
+        highlights = _json.loads(text)
+        if not isinstance(highlights, list):
+            highlights = []
+        return jsonify({'highlights': highlights[:3]})
+    except Exception as ex:
+        print(f"[highlights] error: {ex}")
+        return jsonify({'highlights': []})
+
+
 @app.route('/emails/<path:email_id>/restore', methods=['POST'])
 def restore_dismissed_email(email_id):
     """Remove an email from the dismissed list to restore it to the inbox."""
@@ -1009,6 +1085,19 @@ def restore_dismissed_email(email_id):
     return jsonify({'ok': True})
 
 
+@app.route('/emails/<path:email_id>/attachment-file-id', methods=['GET'])
+def get_attachment_file_id(email_id):
+    """Look up the stored file_id for a PDF attachment by its deterministic MD5 key."""
+    filename = request.args.get('filename', '')
+    if not filename:
+        return jsonify({'error': 'filename required'}), 400
+    file_id = hashlib.md5(f"{email_id}:{filename}".encode()).hexdigest()
+    doc = db.collection('hana_files').document(file_id).get()
+    if not doc.exists:
+        return jsonify({'error': 'Not found'}), 404
+    return jsonify({'file_id': file_id, 'url': f"/files/{file_id}/download"})
+
+
 # ── Relevant Files ────────────────────────────────────────────────────────────
 
 _ALLOWED_FILE_TYPES = {
@@ -1018,6 +1107,39 @@ _ALLOWED_FILE_TYPES = {
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
 }
 _MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@app.route('/avatar', methods=['POST'])
+def upload_avatar_route():
+    from gcs import upload_avatar as gcs_upload_avatar
+    from flask import Response
+    user_email = request.form.get('user') or _req_user()
+    f = request.files.get('file')
+    if not f:
+        return jsonify({'error': 'No file'}), 400
+    content_type = f.content_type or 'image/jpeg'
+    if content_type not in ('image/jpeg', 'image/png'):
+        return jsonify({'error': 'Only JPEG or PNG accepted'}), 400
+    image_bytes = f.read()
+    if len(image_bytes) > 5_000_000:
+        return jsonify({'error': 'Image exceeds 5 MB'}), 400
+    path = gcs_upload_avatar(user_email, image_bytes, content_type)
+    if not path:
+        return jsonify({'error': 'Upload failed'}), 500
+    return jsonify({'ok': True})
+
+
+@app.route('/avatar', methods=['GET'])
+def get_avatar_route():
+    from gcs import get_avatar as gcs_get_avatar
+    from flask import Response
+    user_email = request.args.get('user', '')
+    if not user_email:
+        return jsonify({'error': 'Missing user'}), 400
+    image_bytes, content_type = gcs_get_avatar(user_email)
+    if image_bytes is None:
+        return jsonify({'error': 'No avatar'}), 404
+    return Response(image_bytes, status=200, mimetype=content_type or 'image/jpeg')
 
 
 @app.route('/files', methods=['GET'])
@@ -1093,18 +1215,30 @@ def upload_file_endpoint():
     return jsonify({'ok': True, 'file_id': file_id, 'filename': filename})
 
 
-@app.route('/files/<file_id>/url', methods=['GET'])
-def get_file_url(file_id):
-    from gcs import generate_signed_url
+@app.route('/files/<file_id>/download', methods=['GET'])
+def download_file_endpoint(file_id):
+    """Proxy file bytes from GCS directly to the browser."""
+    from gcs import download_file
+    from flask import Response
     db = get_db()
     doc = db.collection('hana_files').document(file_id).get()
     if not doc.exists:
         return jsonify({'error': 'File not found'}), 404
-    gcs_path = doc.to_dict().get('gcs_path', '')
-    url = generate_signed_url(gcs_path)
-    if not url:
-        return jsonify({'error': 'Could not generate URL'}), 500
-    return jsonify({'url': url})
+    d = doc.to_dict()
+    gcs_path = d.get('gcs_path', '')
+    filename = d.get('filename', 'file')
+    file_bytes, content_type = download_file(gcs_path)
+    if file_bytes is None:
+        return jsonify({'error': 'Could not retrieve file'}), 500
+    return Response(
+        file_bytes,
+        status=200,
+        mimetype=content_type,
+        headers={
+            'Content-Disposition': f'inline; filename="{filename}"',
+            'Content-Length': str(len(file_bytes)),
+        }
+    )
 
 
 @app.route('/files/<file_id>', methods=['DELETE'])
@@ -1329,6 +1463,22 @@ def update_calendar_event(event_id):
         )
         user = _req_user(data)
         log_action(user, 'calendar_event_edited', {'event_id': event_id, 'title': data.get('title')}, actor='user')
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/calendar/events/<event_id>/assignee', methods=['PATCH'])
+def patch_calendar_event_assignee(event_id):
+    """Update only the assignee of a calendar event without touching title/date/time."""
+    from gcalendar import update_event_assignee
+    data = request.get_json() or {}
+    assignee_label = data.get('assignee_label')  # 'Daniel', 'Emily', 'Both', or None
+    try:
+        update_event_assignee(event_id, assignee_label)
+        user = _req_user(data)
+        log_action(user, 'calendar_event_edited',
+                   {'event_id': event_id, 'assignee_label': assignee_label}, actor='user')
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

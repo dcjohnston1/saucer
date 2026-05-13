@@ -109,13 +109,15 @@ def _extract_html_body(payload):
     return ''
 
 
+_EXTRACTABLE_MIMES = {'application/pdf', 'image/jpeg', 'image/png'}
+
 def _extract_attachments(payload, service, user_id, msg_id):
-    """Walk MIME tree and return list of {filename, extracted_text} for PDF parts."""
+    """Walk MIME tree and return list of attachment dicts for PDF and image parts."""
     attachments = []
     mime = payload.get('mimeType', '')
     filename = payload.get('filename', '')
 
-    if mime == 'application/pdf' and filename:
+    if mime in _EXTRACTABLE_MIMES and filename:
         try:
             body = payload.get('body', {})
             data = body.get('data')
@@ -127,26 +129,32 @@ def _extract_attachments(payload, service, user_id, msg_id):
                     ).execute()
                     data = resp.get('data', '')
             if data:
-                pdf_bytes = base64.urlsafe_b64decode(data)
-                pdf_size = len(pdf_bytes)
-                import pdfplumber
-                text = ''
-                with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                    for page in pdf.pages:
-                        text += (page.extract_text() or '') + '\n'
+                file_bytes = base64.urlsafe_b64decode(data)
+                file_size = len(file_bytes)
                 att = {
                     'filename': filename,
-                    'extracted_text': text[:8000].strip(),
-                    '_pdf_size': pdf_size,
+                    'mime': mime,
+                    'extracted_text': '',
+                    '_file_size': file_size,
                 }
-                if pdf_size <= 10_000_000:
-                    att['_pdf_bytes_b64'] = base64.b64encode(pdf_bytes).decode()
+                if mime == 'application/pdf':
+                    try:
+                        import pdfplumber
+                        text = ''
+                        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                            for page in pdf.pages:
+                                text += (page.extract_text() or '') + '\n'
+                        att['extracted_text'] = text[:8000].strip()
+                    except Exception as pdf_err:
+                        print(f"PDF text extraction error ({filename}): {pdf_err}")
+                if file_size <= 10_000_000:
+                    att['_pdf_bytes_b64'] = base64.b64encode(file_bytes).decode()
                 else:
-                    print(f"Attachment {filename} too large ({pdf_size} bytes), skipping GCS auto-save")
+                    print(f"Attachment {filename} too large ({file_size} bytes), skipping GCS auto-save")
                 attachments.append(att)
         except Exception as e:
             print(f"Attachment extraction error ({filename}): {e}")
-            attachments.append({'filename': filename, 'extracted_text': ''})
+            attachments.append({'filename': filename, 'mime': mime, 'extracted_text': ''})
 
     for part in payload.get('parts', []):
         attachments.extend(_extract_attachments(part, service, user_id, msg_id))

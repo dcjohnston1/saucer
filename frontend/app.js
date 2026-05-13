@@ -10,6 +10,53 @@ let onboardingHistory = [];
 let _currentBriefingId = null;
 let _currentBriefingMessage = '';
 
+const _highlightsCache = new Map();
+
+function _highlightPhrase(container, phrase) {
+  if (!phrase || phrase.length < 4) return;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  const lower = phrase.toLowerCase();
+  nodes.forEach(textNode => {
+    const idx = textNode.textContent.toLowerCase().indexOf(lower);
+    if (idx === -1) return;
+    const mark = document.createElement('mark');
+    mark.className = 'ai-highlight';
+    const after = textNode.splitText(idx);
+    after.splitText(phrase.length);
+    textNode.parentNode.insertBefore(mark, after);
+    mark.appendChild(after);
+  });
+}
+
+function _applyHighlights(el, highlights) {
+  (highlights || []).forEach(phrase => _highlightPhrase(el, phrase));
+}
+
+const _SEEN_PILLS_KEY = 'saucer_seen_pills';
+function _getSeenPills() {
+  try { return new Set(JSON.parse(localStorage.getItem(_SEEN_PILLS_KEY) || '[]')); } catch { return new Set(); }
+}
+function _markPillSeen(id) {
+  const seen = _getSeenPills();
+  seen.add(id);
+  localStorage.setItem(_SEEN_PILLS_KEY, JSON.stringify([...seen]));
+}
+function _updatePillNewIndicators() {
+  const seen = _getSeenPills();
+  document.querySelectorAll('.shortcut-pill[data-pill-id]').forEach(pill => {
+    const id = pill.dataset.pillId;
+    pill.querySelector('.pill-new-dot')?.remove();
+    if (!seen.has(id)) {
+      const dot = document.createElement('span');
+      dot.className = 'pill-new-dot';
+      pill.appendChild(dot);
+    }
+  });
+}
+
 const _splashStart = Date.now();
 const _SPLASH_MIN_MS = 2800;
 let _splashDismissed = false;
@@ -72,6 +119,8 @@ function signOut() {
   currentUser = null;
   conversationHistory = [];
   document.getElementById('chat-btn').classList.add('hidden');
+  document.getElementById('avatar-btn').classList.add('hidden');
+  document.getElementById('account-popover').classList.add('hidden');
   document.getElementById('main-app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
   if (window.google?.accounts?.id) {
@@ -216,13 +265,6 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('usage-back-btn').addEventListener('click', closeUsageScreen);
 
-  // My Profile (context) screen
-  document.getElementById('menu-context').addEventListener('click', () => {
-    closeDrawer();
-    openContextScreen();
-  });
-  document.getElementById('context-back-btn').addEventListener('click', closeContextScreen);
-
   // Hana's notes screen
   document.getElementById('menu-notes').addEventListener('click', () => {
     closeDrawer();
@@ -316,6 +358,35 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('files-upload-input').addEventListener('change', handleFileUpload);
   document.getElementById('files-search').addEventListener('input', filterFilesList);
 
+  // Avatar button toggles account popover
+  document.getElementById('avatar-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('account-popover').classList.toggle('hidden');
+  });
+  document.addEventListener('click', () => {
+    document.getElementById('account-popover').classList.add('hidden');
+  });
+
+  // Reviewed email viewer drawer
+  document.getElementById('reviewed-email-drawer-close').addEventListener('click', closeReviewedEmailDrawer);
+  document.getElementById('reviewed-email-overlay').addEventListener('click', closeReviewedEmailDrawer);
+
+  // Avatar crop modal
+  document.getElementById('avatar-change-btn').addEventListener('click', () => {
+    document.getElementById('account-popover').classList.add('hidden');
+    openAvatarCropModal();
+  });
+  document.getElementById('avatar-crop-close').addEventListener('click', closeAvatarCropModal);
+  document.getElementById('avatar-crop-overlay').addEventListener('click', closeAvatarCropModal);
+  document.getElementById('avatar-choose-btn').addEventListener('click', () => document.getElementById('avatar-file-input').click());
+  document.getElementById('avatar-file-input').addEventListener('change', onAvatarFileChosen);
+  document.getElementById('avatar-save-btn').addEventListener('click', saveAvatarCrop);
+
+  // Shortcut pills
+  document.getElementById('pill-this-week').addEventListener('click', () => { _markPillSeen('pill-this-week'); document.getElementById('pill-this-week').querySelector('.pill-new-dot')?.remove(); openCalendarScreen(0); });
+  document.getElementById('pill-todos').addEventListener('click', () => { _markPillSeen('pill-todos'); document.getElementById('pill-todos').querySelector('.pill-new-dot')?.remove(); openListScreen(); });
+  document.getElementById('pill-dismissed').addEventListener('click', () => { _markPillSeen('pill-dismissed'); document.getElementById('pill-dismissed').querySelector('.pill-new-dot')?.remove(); openHanaDismissedScreen(); });
+
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');
   if (stored) {
@@ -340,7 +411,24 @@ function showMainApp(user) {
   document.getElementById('main-app').classList.remove('hidden');
   document.getElementById('hamburger-btn').classList.remove('hidden');
   document.getElementById('chat-btn').classList.remove('hidden');
-  document.getElementById('user-name').textContent = user.name;
+  const avatarBtn = document.getElementById('avatar-btn');
+  avatarBtn.classList.remove('hidden');
+  document.getElementById('avatar-initial').textContent = (user.name || user.email)[0].toUpperCase();
+  document.getElementById('account-popover-name').textContent = user.name || '';
+  document.getElementById('account-popover-email').textContent = user.email || '';
+
+  fetch(`${BACKEND_URL}/avatar?user=${encodeURIComponent(user.email)}`)
+    .then(res => { if (res.ok) return res.blob(); throw new Error('no avatar'); })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const btn = document.getElementById('avatar-btn');
+      btn.style.backgroundImage = `url(${url})`;
+      btn.style.backgroundSize = 'cover';
+      btn.style.backgroundPosition = 'center';
+      document.getElementById('avatar-initial').style.display = 'none';
+    })
+    .catch(() => {});
+
   loadEmailFilters();
   loadKeywordFilters();
   loadExcludeKeywordFilters();
@@ -348,6 +436,7 @@ function showMainApp(user) {
   initPullToRefresh();
   checkMorningBriefing();
   startQuestionPolling();
+  _updatePillNewIndicators();
 }
 
 function openMembersScreen() {
@@ -790,8 +879,10 @@ function formatEmailDate(dateStr) {
 
 function buildEmailCard(email, isNew = false) {
   const bodyText = (email.body || email.snippet || '').trim();
-  const summary = email.summary || null;
-  const previewText = summary || bodyText.slice(0, 220).replace(/\n+/g, ' ');
+  const summary = email.summary
+    ? (email.summary.length > 140 ? email.summary.slice(0, 140) + '…' : email.summary)
+    : null;
+  const previewText = summary !== null ? summary : bodyText.slice(0, 140);
   const hasMore = bodyText.length > 220 || email.html_body;
   const isUncertain = email.verdict === 'uncertain';
 
@@ -827,7 +918,7 @@ function buildEmailCard(email, isNew = false) {
   if (hasMore) {
     const expandBtn = card.querySelector('.email-expand-btn');
     let expandedEl = null;
-    expandBtn.addEventListener('click', () => {
+    expandBtn.addEventListener('click', async () => {
       if (expandedEl) {
         expandedEl.classList.toggle('hidden');
         expandBtn.textContent = expandedEl.classList.contains('hidden') ? 'Show more ▾' : 'Show less ▴';
@@ -842,8 +933,25 @@ function buildEmailCard(email, isNew = false) {
         expandedEl.className = 'email-full-body';
         expandedEl.textContent = bodyText;
       }
-      expandBtn.parentNode.insertBefore(expandedEl, expandBtn);
+      expandBtn.after(expandedEl);
       expandBtn.textContent = 'Show less ▴';
+      if (_highlightsCache.has(email.id)) {
+        _applyHighlights(expandedEl, _highlightsCache.get(email.id));
+      } else {
+        try {
+          const res = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/highlights`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body_text: bodyText.slice(0, 3000) }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const highlights = data.highlights || [];
+            _highlightsCache.set(email.id, highlights);
+            _applyHighlights(expandedEl, highlights);
+          }
+        } catch {}
+      }
     });
   }
 
@@ -855,7 +963,29 @@ function buildEmailCard(email, isNew = false) {
       chip.className = 'attachment-chip';
       chip.textContent = `📎 ${a.filename}`;
 
-      if (a.extracted_text) {
+      const isPdf = /\.pdf$/i.test(a.filename);
+      if (isPdf) {
+        chip.classList.add('attachment-chip--expandable');
+        chip.addEventListener('click', async () => {
+          if (a.file_id) {
+            window.open(`${BACKEND_URL}/files/${encodeURIComponent(a.file_id)}/download`, '_blank');
+          } else {
+            try {
+              const res = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/attachment-file-id?filename=${encodeURIComponent(a.filename)}`);
+              if (res.ok) {
+                const data = await res.json();
+                a.file_id = data.file_id;
+                window.open(`${BACKEND_URL}/files/${encodeURIComponent(data.file_id)}/download`, '_blank');
+              } else {
+                showToast('PDF not yet saved — open the email to trigger a rescan');
+              }
+            } catch {
+              showToast('Could not open PDF');
+            }
+          }
+        });
+        chips.appendChild(chip);
+      } else if (a.extracted_text) {
         chip.classList.add('attachment-chip--expandable');
         const textEl = document.createElement('div');
         textEl.className = 'attachment-text hidden';
@@ -1228,27 +1358,62 @@ async function loadReviewedScreen() {
   try {
     const res = await fetch(`${BACKEND_URL}/reviewed-emails`);
     const data = await res.json();
-    const emails = data.emails || [];
+    const emails = (data.emails || []).sort((a, b) => {
+      const tsA = a._action_timestamp || a.date || '';
+      const tsB = b._action_timestamp || b.date || '';
+      return new Date(tsB) - new Date(tsA);
+    });
+    const windowDays = data.window_days || 30;
+
     if (emails.length === 0) {
-      content.innerHTML = '<div class="empty-state">No reviewed emails yet.</div>';
+      content.innerHTML = `<p class="empty-state">No activity in the last ${windowDays} days.</p>`;
       return;
     }
-    content.innerHTML = '';
+
+    content.innerHTML = `<p class="reviewed-window-note">Showing last ${windowDays} days</p>`;
+
     emails.forEach(email => {
       const card = document.createElement('div');
       card.className = 'reviewed-email-card';
+      card.style.cursor = 'pointer';
+
+      const actionLabel = email._action_label || 'Reviewed';
+      const actionTs = email._action_timestamp ? formatEmailDate(email._action_timestamp) : '';
+
       card.innerHTML = `
         <div class="reviewed-email-meta">
-          <span class="reviewed-email-sender">${escapeHtml(email.sender)}</span>
+          <span class="reviewed-email-sender">${escapeHtml(email.sender || '')}</span>
           <span class="reviewed-email-date">${escapeHtml(formatEmailDate(email.date))}</span>
         </div>
         <div class="reviewed-email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+        <div class="reviewed-email-action-label">${escapeHtml(actionLabel)}${actionTs ? ' · ' + actionTs : ''}</div>
       `;
+
+      card.addEventListener('click', () => openReviewedEmailDrawer(email));
       content.appendChild(card);
     });
   } catch (err) {
     content.innerHTML = '<div class="empty-state">Error loading reviewed emails.</div>';
   }
+}
+
+function openReviewedEmailDrawer(email) {
+  document.getElementById('reviewed-email-drawer-subject').textContent = email.subject || '(No Subject)';
+  const body = document.getElementById('reviewed-email-drawer-body');
+  const meta = `<div class="email-excerpt-meta">${escapeHtml(email.sender || '')} · ${escapeHtml(formatEmailDate(email.date))}</div>`;
+  if (email.html_body) {
+    body.innerHTML = meta + `<div class="email-html-body">${sanitizeEmailHtml(email.html_body)}</div>`;
+  } else {
+    const text = (email.body || email.snippet || '').trim();
+    body.innerHTML = meta + `<div class="email-excerpt-body">${escapeHtml(text)}</div>`;
+  }
+  document.getElementById('reviewed-email-overlay').classList.remove('hidden');
+  document.getElementById('reviewed-email-drawer').classList.remove('hidden');
+}
+
+function closeReviewedEmailDrawer() {
+  document.getElementById('reviewed-email-overlay').classList.add('hidden');
+  document.getElementById('reviewed-email-drawer').classList.add('hidden');
 }
 
 // NOTE: Proposals screen removed in Hana sprint (Task 5). Inline proposal rows on email
@@ -2157,6 +2322,19 @@ function formatWeekRange(start, end) {
 }
 
 function _buildCalendarEventRow(e) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'cal-event-wrapper';
+
+  const bg = document.createElement('div');
+  bg.className = 'cal-event-action-bg';
+  bg.innerHTML = `
+    <button class="cal-action-btn cal-action-btn--d"  data-assignee-label="Daniel" title="Assign to Dan">D</button>
+    <button class="cal-action-btn cal-action-btn--e"  data-assignee-label="Emily"  title="Assign to Emily">E</button>
+    <button class="cal-action-btn cal-action-btn--de" data-assignee-label="Both"   title="Assign to both">DE</button>
+    <button class="cal-action-btn cal-action-btn--x"  data-assignee-label=""       title="Delete event">✕</button>
+  `;
+  wrapper.appendChild(bg);
+
   const row = document.createElement('div');
   row.className = 'calendar-event' + (e.all_day ? ' calendar-event--allday' : '');
 
@@ -2189,7 +2367,103 @@ function _buildCalendarEventRow(e) {
   `;
 
   row.addEventListener('click', () => openCalendarEventEditDrawer(e));
-  return row;
+  wrapper.appendChild(row);
+
+  addSwipeToCalendarEvent(wrapper, row, bg, e);
+  return wrapper;
+}
+
+function addSwipeToCalendarEvent(wrapper, row, bg, event) {
+  const SNAP_WIDTH = 196;
+  let startX = 0, startY = 0, deltaX = 0;
+  let dragging = false, snapped = false, axisLocked = false, axisIsHorizontal = false;
+
+  function snapBack() {
+    row.style.transition = 'transform 0.25s ease';
+    row.style.transform = 'translateX(0)';
+    snapped = false;
+  }
+
+  row.addEventListener('touchstart', (e) => {
+    e.stopPropagation();
+    if (snapped) { snapBack(); return; }
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    dragging = true;
+    axisLocked = false;
+    axisIsHorizontal = false;
+    row.style.transition = 'none';
+  }, { passive: true });
+
+  row.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      axisLocked = true;
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
+    }
+    if (!axisIsHorizontal) return;
+    e.preventDefault();
+    e.stopPropagation();
+    deltaX = dx;
+    if (deltaX > 0) row.style.transform = `translateX(${Math.min(deltaX, SNAP_WIDTH)}px)`;
+  }, { passive: false });
+
+  row.addEventListener('touchend', (e) => {
+    if (!dragging) return;
+    dragging = false;
+    e.stopPropagation();
+    if (deltaX > 50) {
+      row.style.transition = 'transform 0.25s ease';
+      row.style.transform = `translateX(${SNAP_WIDTH}px)`;
+      snapped = true;
+    } else {
+      snapBack();
+    }
+    deltaX = 0;
+  });
+
+  document.addEventListener('touchstart', (e) => {
+    if (snapped && !wrapper.contains(e.target)) snapBack();
+  }, { passive: true });
+
+  bg.querySelectorAll('.cal-action-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const assigneeLabel = btn.dataset.assigneeLabel;
+      snapBack();
+
+      if (btn.classList.contains('cal-action-btn--x')) {
+        if (!confirm(`Delete "${event.title}"?`)) return;
+        try {
+          const userParam = getUserEmail() ? `?user=${encodeURIComponent(getUserEmail())}` : '';
+          await fetch(`${BACKEND_URL}/calendar/events/${encodeURIComponent(event.id)}${userParam}`, { method: 'DELETE' });
+          wrapper.remove();
+          showToast('Event deleted');
+        } catch (err) {
+          showToast('Could not delete event');
+        }
+      } else {
+        try {
+          await fetch(`${BACKEND_URL}/calendar/events/${encodeURIComponent(event.id)}/assignee`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ assignee_label: assigneeLabel, user: getUserEmail() }),
+          });
+          showToast(`Assigned to ${assigneeLabel}`);
+          const { start, end } = getWeekRange(calendarWeekOffset);
+          const content = document.getElementById('calendar-content');
+          content.innerHTML = '<p class="empty-state">Loading…</p>';
+          await _loadCalendarContent(content, start, end);
+          _attachCalendarSwipe(content);
+        } catch (err) {
+          showToast('Could not update assignee');
+        }
+      }
+    });
+  });
 }
 
 async function openCalendarScreen(weekOffset) {
@@ -2250,17 +2524,29 @@ function _attachCalendarSwipe(content) {
   if (_calSwipeController) _calSwipeController.abort();
   _calSwipeController = new AbortController();
   const signal = _calSwipeController.signal;
-  let startX = 0, startY = 0, active = false;
+  let startX = 0, startY = 0, active = false, axisLocked = false, axisIsHorizontal = false;
 
   content.addEventListener('touchstart', (e) => {
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     active = true;
+    axisLocked = false;
+    axisIsHorizontal = false;
+  }, { passive: true, signal });
+
+  content.addEventListener('touchmove', (e) => {
+    if (!active || axisLocked) return;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+    axisLocked = true;
+    axisIsHorizontal = Math.abs(dx) >= Math.abs(dy) * 1.5;
   }, { passive: true, signal });
 
   content.addEventListener('touchend', async (e) => {
     if (!active) return;
     active = false;
+    if (!axisIsHorizontal) return;
     const dx = e.changedTouches[0].clientX - startX;
     const dy = e.changedTouches[0].clientY - startY;
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
@@ -3150,6 +3436,7 @@ async function loadHanaDismissedEmails() {
     emails.forEach(email => {
       const card = document.createElement('div');
       card.className = 'hana-dismissed-card';
+      card.style.cursor = 'pointer';
       const dateStr = email.date ? formatEmailDate(email.date) : '';
       const reasonText = email.reason || '';
       const truncatedReason = reasonText.length > 120 ? reasonText.slice(0, 120) + '…' : reasonText;
@@ -3162,12 +3449,22 @@ async function loadHanaDismissedEmails() {
           <button class="dismissed-review-restore-btn" style="width:100%">Restore to inbox</button>
         </div>
       `;
-      card.querySelector('.dismissed-review-restore-btn').addEventListener('click', async () => {
+      card.querySelector('.dismissed-review-restore-btn').addEventListener('click', async (e) => {
+        e.stopPropagation();
         await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/restore`, { method: 'POST' });
         card.remove();
         showToast('Email restored to inbox');
         if (!list.querySelector('.hana-dismissed-card')) {
           list.innerHTML = '<div class="empty-state">Nothing here — Hana hasn\'t dismissed anything recently, or everything looks right.</div>';
+        }
+      });
+      card.addEventListener('click', async () => {
+        try {
+          const res = await fetch(`${BACKEND_URL}/email/${encodeURIComponent(email.id)}/excerpt`);
+          const data = await res.json();
+          openReviewedEmailDrawer({ ...email, ...data });
+        } catch {
+          openReviewedEmailDrawer(email);
         }
       });
       list.appendChild(card);
@@ -3217,13 +3514,8 @@ function renderFilesList(files) {
         <button class="file-delete-btn">Delete</button>
       </div>
     `;
-    row.querySelector('.file-view-btn').addEventListener('click', async () => {
-      try {
-        const res = await fetch(`${BACKEND_URL}/files/${encodeURIComponent(file.file_id)}/url`);
-        const data = await res.json();
-        if (data.url) window.open(data.url, '_blank');
-        else showToast('Could not generate link');
-      } catch (e) { showToast('Error opening file'); }
+    row.querySelector('.file-view-btn').addEventListener('click', () => {
+      window.open(`${BACKEND_URL}/files/${encodeURIComponent(file.file_id)}/download`, '_blank');
     });
     row.querySelector('.file-delete-btn').addEventListener('click', async () => {
       if (!confirm(`Delete "${file.filename}"?`)) return;
@@ -3264,6 +3556,119 @@ async function handleFileUpload(e) {
     loadFilesList();
   } catch (e) {
     showToast('Upload failed');
+  }
+}
+
+// ── Avatar crop ────────────────────────────────────────────────────────────────────────────
+
+let _avatarCropState = null;
+
+function openAvatarCropModal() {
+  document.getElementById('avatar-crop-overlay').classList.remove('hidden');
+  document.getElementById('avatar-crop-modal').classList.remove('hidden');
+}
+
+function closeAvatarCropModal() {
+  document.getElementById('avatar-crop-overlay').classList.add('hidden');
+  document.getElementById('avatar-crop-modal').classList.add('hidden');
+  _avatarCropState = null;
+  document.getElementById('avatar-crop-img').src = '';
+  document.getElementById('avatar-save-btn').disabled = true;
+}
+
+function onAvatarFileChosen(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = document.getElementById('avatar-crop-img');
+    img.onload = () => {
+      const vp = 260;
+      const scale = Math.max(vp / img.naturalWidth, vp / img.naturalHeight);
+      _avatarCropState = { scale, offsetX: 0, offsetY: 0 };
+      _applyAvatarTransform();
+      document.getElementById('avatar-save-btn').disabled = false;
+      _wireAvatarDrag();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
+
+function _applyAvatarTransform() {
+  const { scale, offsetX, offsetY } = _avatarCropState;
+  document.getElementById('avatar-crop-img').style.transform =
+    `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+}
+
+function _wireAvatarDrag() {
+  const vpEl = document.getElementById('avatar-crop-viewport');
+  let dragging = false, lastX = 0, lastY = 0;
+
+  vpEl.addEventListener('pointerdown', (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    vpEl.setPointerCapture(e.pointerId);
+  });
+  vpEl.addEventListener('pointermove', (e) => {
+    if (!dragging || !_avatarCropState) return;
+    _avatarCropState.offsetX += e.clientX - lastX;
+    _avatarCropState.offsetY += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    _applyAvatarTransform();
+  });
+  vpEl.addEventListener('pointerup', () => { dragging = false; });
+
+  vpEl.addEventListener('wheel', (e) => {
+    if (!_avatarCropState) return;
+    e.preventDefault();
+    _avatarCropState.scale = Math.max(0.5, Math.min(5, _avatarCropState.scale - e.deltaY * 0.002));
+    _applyAvatarTransform();
+  }, { passive: false });
+}
+
+async function saveAvatarCrop() {
+  if (!_avatarCropState) return;
+  const saveBtn = document.getElementById('avatar-save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 260; canvas.height = 260;
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(130, 130, 130, 0, Math.PI * 2);
+    ctx.clip();
+    const img = document.getElementById('avatar-crop-img');
+    const { scale, offsetX, offsetY } = _avatarCropState;
+    ctx.drawImage(img, offsetX, offsetY, img.naturalWidth * scale, img.naturalHeight * scale);
+
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.88));
+    const formData = new FormData();
+    formData.append('file', blob, 'avatar.jpg');
+    formData.append('user', getUserEmail());
+
+    const res = await fetch(`${BACKEND_URL}/avatar`, { method: 'POST', body: formData });
+    if (!res.ok) throw new Error('Upload failed');
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const btn = document.getElementById('avatar-btn');
+      btn.style.backgroundImage = `url(${ev.target.result})`;
+      btn.style.backgroundSize = 'cover';
+      btn.style.backgroundPosition = 'center';
+      document.getElementById('avatar-initial').style.display = 'none';
+    };
+    reader.readAsDataURL(blob);
+
+    showToast('Photo saved');
+    closeAvatarCropModal();
+  } catch (err) {
+    showToast('Could not save photo');
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
   }
 }
 

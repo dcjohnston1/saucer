@@ -48,6 +48,35 @@ def delete_file(gcs_path: str) -> bool:
         return False
 
 
+def download_file(gcs_path: str) -> tuple:
+    """Return (file_bytes, content_type) or (None, None) on error."""
+    try:
+        blob = _bucket().blob(gcs_path)
+        content_type = blob.content_type or 'application/octet-stream'
+        return blob.download_as_bytes(), content_type
+    except Exception as e:
+        print(f"GCS download error ({gcs_path}): {e}")
+        return None, None
+
+
+def upload_avatar(email: str, image_bytes: bytes, content_type: str = 'image/jpeg') -> str | None:
+    import hashlib
+    path = f"avatars/{hashlib.md5(email.encode()).hexdigest()}.jpg"
+    try:
+        blob = _bucket().blob(path)
+        blob.upload_from_string(image_bytes, content_type=content_type)
+        return path
+    except Exception as e:
+        print(f"Avatar upload error: {e}")
+        return None
+
+
+def get_avatar(email: str) -> tuple:
+    import hashlib
+    path = f"avatars/{hashlib.md5(email.encode()).hexdigest()}.jpg"
+    return download_file(path)
+
+
 def generate_signed_url(gcs_path: str, expiry_minutes: int = 15):
     """Generate a V4 signed URL using workload identity credentials (Cloud Run compatible)."""
     try:

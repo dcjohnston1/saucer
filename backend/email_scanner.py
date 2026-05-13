@@ -250,8 +250,14 @@ def summarize_emails(emails):
 
     blocks = []
     for e in emails:
-        body = (e.get('body') or e.get('snippet', ''))[:600]
+        body = (e.get('body') or e.get('snippet', ''))[:1500]
+        if not body.strip():
+            print(f"[summarize] email {e.get('id')} has empty body — skipping")
+            continue
         blocks.append(f"EMAIL_ID: {e['id']}\nSubject: {e['subject']}\nFrom: {e['sender']}\nBody: {body}")
+
+    if not blocks:
+        return {}
 
     prompt = """Summarize each email in up to 140 characters. Lead with the main point or action required — not who sent it. Be specific: mention dates, amounts, deadlines, or events by name. Never start with "Email from" or the sender's name.
 
@@ -270,8 +276,19 @@ Emails:
             generation_config={'response_mime_type': 'application/json'}
         )
         response = model.generate_content(prompt)
-        items = json.loads(response.text)
-        return {item['email_id']: item['summary'][:140] for item in items if 'email_id' in item and 'summary' in item}
+        raw = response.text
+        print(f"[summarize] raw response (first 200 chars): {raw[:200]}")
+        items = json.loads(raw)
+        result = {}
+        for item in items:
+            if 'email_id' in item and 'summary' in item:
+                s = item['summary']
+                if s and len(s) >= 10:
+                    result[item['email_id']] = s[:140]
+                else:
+                    print(f"[summarize] email {item.get('email_id')} got unusable summary: {repr(s)}")
+        return result
     except Exception as e:
-        print(f"Summarize error: {e}")
+        print(f"[summarize] error generating summaries: {e}")
+        import traceback; traceback.print_exc()
         return {}

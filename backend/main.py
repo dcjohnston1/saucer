@@ -1097,6 +1097,7 @@ def get_attachment_file_id(email_id):
     if not filename:
         return jsonify({'error': 'filename required'}), 400
 
+    db = get_db()
     file_id = hashlib.md5(f"{email_id}:{filename}".encode()).hexdigest()
     doc = db.collection('hana_files').document(file_id).get()
     if doc.exists:

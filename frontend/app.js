@@ -228,9 +228,12 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('new-exclude-keyword-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') addExcludeKeyword();
   });
-  document.getElementById('send-btn').addEventListener('click', sendMessage);
   document.getElementById('msg-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+  document.getElementById('msg-input').addEventListener('input', _updateSendBtn);
+  document.getElementById('input-plus-btn').addEventListener('click', () => {
+    document.getElementById('msg-input').focus();
   });
 
   // Drawer
@@ -1013,7 +1016,15 @@ function buildEmailCard(email, isNew = false) {
             chip.after(inlineEl);
             chip.classList.add('attachment-chip--open');
           } catch {
-            showToast('Could not open attachment');
+            if (a.extracted_text) {
+              inlineEl = document.createElement('div');
+              inlineEl.className = 'attachment-text';
+              inlineEl.textContent = a.extracted_text;
+              chip.after(inlineEl);
+              chip.classList.add('attachment-chip--open');
+            } else {
+              showToast('Could not open attachment');
+            }
           } finally {
             chip.textContent = `📎 ${a.filename}`;
           }
@@ -1973,24 +1984,45 @@ let _voiceSilenceTimer = null; // fires after 1.8s of silence to auto-submit
 
 function initVoice() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const sendBtn = document.getElementById('send-btn');
+  const micBtn = document.getElementById('mic-btn');
+
+  // Wire send-btn: voice-to-voice toggle when empty, text send when textarea has content
+  sendBtn.addEventListener('click', () => {
+    if (sendBtn.dataset.mode === 'send' || !SpeechRecognition) {
+      sendMessage();
+      return;
+    }
+    if (voiceModeActive) {
+      // Turn off voice-to-voice
+      voiceModeActive = false;
+      localStorage.setItem('hana_voice_mode', false);
+      window.speechSynthesis.cancel();
+      try { recognition.stop(); } catch (e) {}
+      micBtn.classList.remove('mic-btn--recording', 'hana-speaking');
+      _applyVoiceModeBtnState();
+    } else {
+      // Turn on voice-to-voice and start listening
+      voiceModeActive = true;
+      localStorage.setItem('hana_voice_mode', true);
+      _applyVoiceModeBtnState();
+      _unlockSpeechSynthesis();
+      _voiceTranscript = '';
+      recognitionFired = false;
+      micBtn.classList.add('mic-btn--recording');
+      try { recognition.start(); } catch (e) {}
+    }
+  });
+
   if (!SpeechRecognition) return;
 
-  const micBtn = document.getElementById('mic-btn');
-  const voiceBtn = document.getElementById('voice-mode-btn');
   micBtn.classList.remove('hidden');
-
   _applyVoiceModeBtnState();
-
-  voiceBtn.addEventListener('click', () => {
-    voiceModeActive = !voiceModeActive;
-    localStorage.setItem('hana_voice_mode', voiceModeActive);
-    _applyVoiceModeBtnState();
-  });
 
   recognition = new SpeechRecognition();
   recognition.lang = 'en-US';
-  recognition.continuous = true;      // don't stop on natural speech pauses
-  recognition.interimResults = true;  // stream results so we can detect silence
+  recognition.continuous = true;
+  recognition.interimResults = true;
   recognition.maxAlternatives = 1;
 
   recognition.onresult = (e) => {
@@ -1998,13 +2030,12 @@ function initVoice() {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
     }
-    if (!finalChunk) return; // ignore interim-only events
+    if (!finalChunk) return;
 
     _voiceTranscript += (_voiceTranscript ? ' ' : '') + finalChunk.trim();
     document.getElementById('msg-input').value = _voiceTranscript;
     recognitionFired = true;
 
-    // Reset silence timer — auto-submit 1.8s after last spoken word
     clearTimeout(_voiceSilenceTimer);
     _voiceSilenceTimer = setTimeout(() => recognition.stop(), 1800);
   };
@@ -2030,27 +2061,25 @@ function initVoice() {
     }
   };
 
+  // Mic button: speech-to-text only (voiceModeActive stays false)
   micBtn.addEventListener('click', () => {
-    if (micBtn.classList.contains('hana-speaking')) {
+    // If voice-to-voice is running, interrupt and switch to text mode
+    if (voiceModeActive) {
+      voiceModeActive = false;
+      localStorage.setItem('hana_voice_mode', false);
       window.speechSynthesis.cancel();
       micBtn.classList.remove('hana-speaking');
-      if (voiceModeActive) {
-        _unlockSpeechSynthesis();
-        _voiceTranscript = '';
-        micBtn.classList.add('mic-btn--recording');
-        recognition.start();
-      }
-      return;
+      _applyVoiceModeBtnState();
     }
 
     if (micBtn.classList.contains('mic-btn--recording')) {
       clearTimeout(_voiceSilenceTimer);
-      recognition.stop(); // onend handles submit
+      recognition.stop(); // onend sends as text
     } else {
-      _unlockSpeechSynthesis();
       _voiceTranscript = '';
+      recognitionFired = false;
       micBtn.classList.add('mic-btn--recording');
-      recognition.start();
+      try { recognition.start(); } catch (e) {}
     }
   });
 }
@@ -2063,16 +2092,14 @@ function _unlockSpeechSynthesis() {
 }
 
 function _applyVoiceModeBtnState() {
-  const voiceBtn = document.getElementById('voice-mode-btn');
-  if (!voiceBtn) return;
+  const sendBtn = document.getElementById('send-btn');
+  if (!sendBtn || sendBtn.dataset.mode === 'send') return;
   if (voiceModeActive) {
-    voiceBtn.textContent = '🔊';
-    voiceBtn.classList.add('voice-mode-on');
-    voiceBtn.title = 'Voice mode on — tap to mute';
+    sendBtn.classList.add('voice-active');
+    sendBtn.setAttribute('aria-label', 'Stop voice conversation');
   } else {
-    voiceBtn.textContent = '🔇';
-    voiceBtn.classList.remove('voice-mode-on');
-    voiceBtn.title = 'Voice mode off — tap to enable';
+    sendBtn.classList.remove('voice-active');
+    sendBtn.setAttribute('aria-label', 'Start voice conversation');
   }
 }
 
@@ -2129,17 +2156,13 @@ function _doSpeak(text, bubbleEl) {
 
   utt.onstart = () => {
     speechStarted = true;
-    if (micBtn) {
-      micBtn.classList.add('hana-speaking');
-      micBtn.textContent = '⏹';
-    }
+    if (micBtn) micBtn.classList.add('hana-speaking');
   };
 
   utt.onend = () => {
     speechStarted = true;
     if (micBtn) {
       micBtn.classList.remove('hana-speaking');
-      micBtn.textContent = '🎤';
       micBtn.classList.add('ready-pulse');
       setTimeout(() => micBtn.classList.remove('ready-pulse'), 1500);
     }
@@ -2194,6 +2217,32 @@ function _addTapToHearBtn(text, bubbleEl) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
+function _hideEmptyState() {
+  const el = document.getElementById('chat-empty-state');
+  if (el) el.style.display = 'none';
+}
+
+const _waveformSVG = `<svg width="18" height="18" viewBox="0 0 20 20" fill="white"><rect x="1" y="6" width="3" height="8" rx="1.5"/><rect x="6" y="2" width="3" height="16" rx="1.5"/><rect x="11" y="5" width="3" height="10" rx="1.5"/><rect x="16" y="3" width="3" height="14" rx="1.5"/></svg>`;
+const _arrowSVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20V4M5 11l7-7 7 7" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+function _updateSendBtn() {
+  const sendBtn = document.getElementById('send-btn');
+  if (!sendBtn) return;
+  const hasText = document.getElementById('msg-input').value.trim().length > 0;
+  if (hasText) {
+    sendBtn.innerHTML = _arrowSVG;
+    sendBtn.dataset.mode = 'send';
+    sendBtn.setAttribute('aria-label', 'Send message');
+    sendBtn.classList.remove('voice-active');
+  } else {
+    sendBtn.innerHTML = _waveformSVG;
+    sendBtn.dataset.mode = 'voice';
+    sendBtn.setAttribute('aria-label', voiceModeActive ? 'Stop voice conversation' : 'Start voice conversation');
+    if (voiceModeActive) sendBtn.classList.add('voice-active');
+    else sendBtn.classList.remove('voice-active');
+  }
+}
+
 async function sendMessage() {
   const msgInput = document.getElementById('msg-input');
   const sendBtn = document.getElementById('send-btn');
@@ -2202,6 +2251,7 @@ async function sendMessage() {
 
   appendMessage('user', text);
   msgInput.value = '';
+  _updateSendBtn();
   sendBtn.disabled = true;
   const typing = appendMessage('saucer', '…', true);
 
@@ -2234,6 +2284,7 @@ async function sendMessage() {
 }
 
 function appendMessage(sender, text, isTyping = false) {
+  _hideEmptyState();
   const messages = document.getElementById('messages');
   const bubble = document.createElement('div');
   bubble.className = `bubble ${sender === 'saucer' ? 'saucer' : 'user'}`;
@@ -2245,6 +2296,7 @@ function appendMessage(sender, text, isTyping = false) {
 }
 
 function appendActionChip(label) {
+  _hideEmptyState();
   const messages = document.getElementById('messages');
   const chip = document.createElement('div');
   chip.className = 'action-chip';

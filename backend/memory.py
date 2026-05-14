@@ -1,4 +1,4 @@
-aude """
+"""
 Hana's knowledge system — all note and question-queue access goes through here.
 No other module writes to hana_notes or hana_question_queue directly.
 """

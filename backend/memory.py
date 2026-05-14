@@ -1,4 +1,4 @@
-"""
+aude """
 Hana's knowledge system — all note and question-queue access goes through here.
 No other module writes to hana_notes or hana_question_queue directly.
 """
@@ -83,10 +83,13 @@ def save_note(topic: str, content: str) -> dict:
     if doc.exists:
         data = doc.to_dict()
         existing_content = data.get('content', '')
+        existing_updated_at = data.get('updated_at')
         merged = _gemini_merge(existing_content, content, topic)
         ref.update({
             'content': merged,
             'updated_at': now,
+            'previous_content': existing_content,
+            'previous_updated_at': existing_updated_at,
         })
         return {"status": "ok", "topic": topic, "action": "updated"}
     else:
@@ -98,6 +101,35 @@ def save_note(topic: str, content: str) -> dict:
             'created_by': 'hana',
         })
         return {"status": "ok", "topic": topic, "action": "created"}
+
+
+def revert_note(topic: str) -> dict:
+    """Swap current note content with its previous version (one-step undo).
+
+    Idempotent — calling twice returns to the original state.
+    Returns {"status": "ok"} or {"status": "no_previous_version"} or {"status": "not_found"}.
+    """
+    db = _db()
+    slug = _slugify(topic)
+    ref = db.collection(_NOTES_COLLECTION).document(slug)
+    doc = ref.get()
+    if not doc.exists:
+        return {"status": "not_found"}
+    data = doc.to_dict()
+    previous_content = data.get('previous_content')
+    if not previous_content:
+        return {"status": "no_previous_version"}
+    previous_updated_at = data.get('previous_updated_at')
+    current_content = data.get('content', '')
+    current_updated_at = data.get('updated_at')
+    now = _now()
+    ref.update({
+        'content': previous_content,
+        'updated_at': now,
+        'previous_content': current_content,
+        'previous_updated_at': current_updated_at,
+    })
+    return {"status": "ok", "topic": topic, "action": "reverted"}
 
 
 def get_note(topic: str) -> dict | None:

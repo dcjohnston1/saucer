@@ -1,3 +1,4 @@
+import sys
 import threading
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -57,7 +58,8 @@ def log_action(user: str, action_type: str, metadata: dict = None,
 
 def log_gemini_decision(action_type: str, input_context: str, context_consulted: str,
                         decision_made: str, reasoning: str, confidence: str = 'medium',
-                        user_email: str = None):
+                        user_email: str = None, full_prompt: str = None,
+                        tool_arguments: dict = None, notes_consulted: list = None):
     """Fire-and-forget write to Firestore gemini_decisions collection."""
     def _write():
         try:
@@ -74,6 +76,19 @@ def log_gemini_decision(action_type: str, input_context: str, context_consulted:
             }
             if user_email:
                 doc['user_email'] = user_email
+            try:
+                if full_prompt:
+                    _orig = len(full_prompt)
+                    if _orig > 900_000:
+                        doc['full_prompt'] = full_prompt[:900_000] + f'\n\n[TRUNCATED — original was {_orig} characters]'
+                    else:
+                        doc['full_prompt'] = full_prompt
+                if tool_arguments is not None:
+                    doc['tool_arguments'] = tool_arguments
+                if notes_consulted is not None:
+                    doc['notes_consulted'] = notes_consulted
+            except Exception as e:
+                print(f'[logger] log_gemini_decision optional fields failed: {e}', file=sys.stderr)
             db.collection('gemini_decisions').add(doc)
         except Exception as e:
             print(f'[logger] log_gemini_decision failed: {e}')

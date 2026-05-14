@@ -1,4 +1,6 @@
+import hashlib
 import os
+import sys
 import google.generativeai as genai
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -445,7 +447,8 @@ def _load_action_history() -> str:
         return ''
 
 
-def _make_add_todo_tool(user_email: str, user_message: str = '', context_available: str = ''):
+def _make_add_todo_tool(user_email: str, user_message: str = '', context_available: str = '',
+                        full_prompt: str = None, notes_consulted: list = None):
     """Return an add_todo function instrumented with Gemini decision logging."""
     def add_todo_logged(
         title: str,
@@ -507,6 +510,9 @@ def _make_add_todo_tool(user_email: str, user_message: str = '', context_availab
                 reasoning=reasoning or '',
                 confidence='medium',
                 user_email=user_email,
+                full_prompt=full_prompt,
+                tool_arguments={'title': title, 'date_expression': date_expression, 'assignee': assignee, 'reasoning': reasoning},
+                notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
             )
 
         return result
@@ -514,7 +520,8 @@ def _make_add_todo_tool(user_email: str, user_message: str = '', context_availab
     return add_todo_logged
 
 
-def _make_reassign_task_tool(user_email: str, user_message: str = '', context_available: str = ''):
+def _make_reassign_task_tool(user_email: str, user_message: str = '', context_available: str = '',
+                             full_prompt: str = None, notes_consulted: list = None):
     def reassign_task(title: str, new_assignee: str, reasoning: str = None):
         """Reassign an existing task in the Google Doc to a different household member.
 
@@ -539,12 +546,16 @@ def _make_reassign_task_tool(user_email: str, user_message: str = '', context_av
             reasoning=reasoning or '',
             confidence='medium',
             user_email=user_email,
+            full_prompt=full_prompt,
+            tool_arguments={'title': title, 'new_assignee': new_assignee, 'reasoning': reasoning},
+            notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
         )
         return {'status': 'ok', 'message': f"Task '{title}' reassigned to {new_assignee}."}
     return reassign_task
 
 
-def _make_complete_task_tool(user_email: str, user_message: str = '', context_available: str = ''):
+def _make_complete_task_tool(user_email: str, user_message: str = '', context_available: str = '',
+                             full_prompt: str = None, notes_consulted: list = None):
     def complete_task(title: str, reasoning: str = None):
         """Mark an existing task as complete (DONE) in the Google Doc.
 
@@ -568,6 +579,9 @@ def _make_complete_task_tool(user_email: str, user_message: str = '', context_av
                 reasoning=reasoning,
                 confidence='high',
                 user_email=user_email,
+                full_prompt=full_prompt,
+                tool_arguments={'title': title, 'reasoning': reasoning},
+                notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
             )
         return {'status': 'ok', 'message': f"Task '{title}' marked as complete."}
     return complete_task
@@ -680,9 +694,11 @@ def process_message(user, message, history=None, user_email=None, conversation_i
             role = 'user' if m['role'] == 'user' else 'model'
             chat_history.append({'role': role, 'parts': [m['content']]})
 
-    add_todo_tool = _make_add_todo_tool(user_email, message, context_available)
-    reassign_tool = _make_reassign_task_tool(user_email, message, context_available)
-    complete_tool = _make_complete_task_tool(user_email, message, context_available)
+    _notes_consulted = []
+
+    add_todo_tool = _make_add_todo_tool(user_email, message, context_available, full_system, _notes_consulted)
+    reassign_tool = _make_reassign_task_tool(user_email, message, context_available, full_system, _notes_consulted)
+    complete_tool = _make_complete_task_tool(user_email, message, context_available, full_system, _notes_consulted)
     decisions_tool = _make_get_decisions_tool(user_email)
 
     _tool_actions = []
@@ -726,7 +742,16 @@ def process_message(user, message, history=None, user_email=None, conversation_i
                    (e.g. 'school pickup', 'food allergies', 'Dan preferences').
         """
         from memory import search_memory
-        return search_memory(query)
+        results = search_memory(query)
+        try:
+            for r in results:
+                _notes_consulted.append({
+                    'topic': r.get('topic', ''),
+                    'content_hash': hashlib.sha256(r.get('content', '').encode()).hexdigest()[:16],
+                })
+        except Exception as e:
+            print(f'[mediator] notes_consulted tracking failed: {e}', file=sys.stderr)
+        return results
 
     def clear_question_tool():
         """Clear the queued question from the question queue.

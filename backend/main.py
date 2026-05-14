@@ -2168,6 +2168,16 @@ def delete_hana_note(topic_slug):
     return jsonify(delete_note(topic_slug))
 
 
+@app.route('/hana/notes/<topic_slug>/revert', methods=['POST'])
+def revert_hana_note(topic_slug):
+    from memory import revert_note
+    from logger import log_action
+    result = revert_note(topic_slug)
+    if result.get('status') == 'ok':
+        log_action('system', 'note_reverted', {'topic_slug': topic_slug})
+    return jsonify(result)
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})

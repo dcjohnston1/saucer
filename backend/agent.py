@@ -28,6 +28,7 @@ Manual test (from Cloud Shell):
 """
 
 import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -189,7 +190,8 @@ def _load_action_history_extended() -> str:
 
 def _log_gemini_decision_sync(action_type, input_context, context_consulted,
                                decision_made, reasoning, confidence='medium',
-                               user_email=None) -> str:
+                               user_email=None, full_prompt=None,
+                               tool_arguments=None, notes_consulted=None) -> str:
     """Write a Gemini decision synchronously and return the doc ID."""
     try:
         db = _firestore.Client(project=_PROJECT)
@@ -205,6 +207,19 @@ def _log_gemini_decision_sync(action_type, input_context, context_consulted,
         }
         if user_email:
             doc_data['user_email'] = user_email
+        try:
+            if full_prompt:
+                _orig = len(full_prompt)
+                if _orig > 900_000:
+                    doc_data['full_prompt'] = full_prompt[:900_000] + f'\n\n[TRUNCATED — original was {_orig} characters]'
+                else:
+                    doc_data['full_prompt'] = full_prompt
+            if tool_arguments is not None:
+                doc_data['tool_arguments'] = tool_arguments
+            if notes_consulted is not None:
+                doc_data['notes_consulted'] = notes_consulted
+        except Exception as e:
+            print(f'[agent] _log_gemini_decision_sync optional fields failed: {e}', file=sys.stderr)
         _, ref = db.collection('gemini_decisions').add(doc_data)
         return ref.id
     except Exception as e:
@@ -212,7 +227,7 @@ def _log_gemini_decision_sync(action_type, input_context, context_consulted,
         return ''
 
 
-def _make_agent_add_todo(agent_state: dict, context_available: str):
+def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt: str = None):
     def add_todo_logged(
         title: str,
         date_expression: str = None,
@@ -273,6 +288,8 @@ def _make_agent_add_todo(agent_state: dict, context_available: str):
                 decision_made=f"Added task '{title}'" + (f" assigned to {assignee}" if assignee else ""),
                 reasoning=reasoning or '',
                 user_email='agent',
+                full_prompt=full_prompt,
+                tool_arguments={'title': title, 'date_expression': date_expression, 'assignee': assignee, 'reasoning': reasoning},
             )
             if dec_id:
                 agent_state['decision_ids'].append(dec_id)
@@ -280,7 +297,7 @@ def _make_agent_add_todo(agent_state: dict, context_available: str):
     return add_todo_logged
 
 
-def _make_agent_reassign(agent_state: dict, context_available: str):
+def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt: str = None):
     def reassign_task(title: str, new_assignee: str, reasoning: str = None):
         """Reassign an existing task in the Google Doc to a different household member.
 
@@ -301,6 +318,8 @@ def _make_agent_reassign(agent_state: dict, context_available: str):
             decision_made=f"Reassigned task '{title}' to {new_assignee}",
             reasoning=reasoning or '',
             user_email='agent',
+            full_prompt=full_prompt,
+            tool_arguments={'title': title, 'new_assignee': new_assignee, 'reasoning': reasoning},
         )
         if dec_id:
             agent_state['decision_ids'].append(dec_id)
@@ -308,7 +327,7 @@ def _make_agent_reassign(agent_state: dict, context_available: str):
     return reassign_task
 
 
-def _make_agent_dismiss_email(agent_state: dict):
+def _make_agent_dismiss_email(agent_state: dict, full_prompt: str = None):
     def dismiss_email(email_id: str, reasoning: str = None):
         """Dismiss an email so it won't appear in the inbox.
 
@@ -323,6 +342,21 @@ def _make_agent_dismiss_email(agent_state: dict):
         agent_state['emails_dismissed'] += 1
         log_action('agent', 'email_dismissed', {'email_id': email_id},
                    actor='gemini', reasoning=reasoning)
+        try:
+            dec_id = _log_gemini_decision_sync(
+                action_type='email_dismissed',
+                input_context='morning agent review',
+                context_consulted='task list, user roles and preferences, household profile, per-user task counts, calendar events (next 7 days)',
+                decision_made=f"Dismissed email {email_id}",
+                reasoning=reasoning or '',
+                user_email='agent',
+                full_prompt=full_prompt,
+                tool_arguments={'email_id': email_id, 'reasoning': reasoning},
+            )
+            if dec_id:
+                agent_state['decision_ids'].append(dec_id)
+        except Exception as e:
+            print(f'[agent] dismiss_email decision log failed: {e}', file=sys.stderr)
         return {'status': 'ok', 'message': f"Email {email_id} dismissed."}
     return dismiss_email
 
@@ -443,9 +477,9 @@ def process_single_email(email: dict) -> str:
         'decision_ids': [],
     }
 
-    add_todo_tool = _make_agent_add_todo(agent_state, context_available)
-    reassign_tool = _make_agent_reassign(agent_state, context_available)
-    dismiss_tool = _make_agent_dismiss_email(agent_state)
+    add_todo_tool = _make_agent_add_todo(agent_state, context_available, full_system)
+    reassign_tool = _make_agent_reassign(agent_state, context_available, full_system)
+    dismiss_tool = _make_agent_dismiss_email(agent_state, full_system)
     write_briefing_tool = _make_write_briefing(db, agent_state, [email])
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()
@@ -537,9 +571,9 @@ def run_morning_agent() -> str:
         'decision_ids': [],
     }
 
-    add_todo_tool = _make_agent_add_todo(agent_state, context_available)
-    reassign_tool = _make_agent_reassign(agent_state, context_available)
-    dismiss_tool = _make_agent_dismiss_email(agent_state)
+    add_todo_tool = _make_agent_add_todo(agent_state, context_available, full_system)
+    reassign_tool = _make_agent_reassign(agent_state, context_available, full_system)
+    dismiss_tool = _make_agent_dismiss_email(agent_state, full_system)
     write_briefing_tool = _make_write_briefing(db, agent_state, overnight_emails)
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()

@@ -290,7 +290,6 @@ window.addEventListener('DOMContentLoaded', () => {
     openListScreen();
   });
   document.getElementById('list-back-btn').addEventListener('click', closeListScreen);
-  document.getElementById('dedup-btn').addEventListener('click', dedupTasks);
 
   // Calendar screens
   document.getElementById('menu-this-week').addEventListener('click', () => {
@@ -935,6 +934,11 @@ function buildEmailCard(email, isNew = false) {
       }
       expandBtn.after(expandedEl);
       expandBtn.textContent = 'Show less ▴';
+      // Highlight source spans from proposals first (most accurate)
+      const proposalSpans = (email.proposals || []).flatMap(p => p.source_spans || []);
+      if (proposalSpans.length > 0) {
+        _applyHighlights(expandedEl, proposalSpans);
+      }
       if (_highlightsCache.has(email.id)) {
         _applyHighlights(expandedEl, _highlightsCache.get(email.id));
       } else {
@@ -964,24 +968,54 @@ function buildEmailCard(email, isNew = false) {
       chip.textContent = `📎 ${a.filename}`;
 
       const isPdf = /\.pdf$/i.test(a.filename);
-      if (isPdf) {
+      const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(a.filename);
+
+      if (isPdf || isImage) {
         chip.classList.add('attachment-chip--expandable');
+        let inlineEl = null;
         chip.addEventListener('click', async () => {
-          if (a.file_id) {
-            window.open(`${BACKEND_URL}/files/${encodeURIComponent(a.file_id)}/download`, '_blank');
-          } else {
-            try {
-              const res = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/attachment-file-id?filename=${encodeURIComponent(a.filename)}`);
-              if (res.ok) {
-                const data = await res.json();
-                a.file_id = data.file_id;
-                window.open(`${BACKEND_URL}/files/${encodeURIComponent(data.file_id)}/download`, '_blank');
-              } else {
-                showToast('PDF not yet saved — open the email to trigger a rescan');
-              }
-            } catch {
-              showToast('Could not open PDF');
+          // Toggle if already rendered
+          if (inlineEl) {
+            const hidden = inlineEl.classList.toggle('hidden');
+            chip.classList.toggle('attachment-chip--open', !hidden);
+            return;
+          }
+          chip.textContent = `📎 ${a.filename} (loading…)`;
+          try {
+            // Get or fetch file_id
+            if (!a.file_id) {
+              const r = await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(email.id)}/attachment-file-id?filename=${encodeURIComponent(a.filename)}`);
+              if (!r.ok) throw new Error('file_id fetch failed');
+              const d = await r.json();
+              if (!d.file_id) throw new Error('no file_id returned');
+              a.file_id = d.file_id;
             }
+            // Fetch bytes as blob
+            const r2 = await fetch(`${BACKEND_URL}/files/${encodeURIComponent(a.file_id)}/download`);
+            if (!r2.ok) throw new Error('download failed');
+            const blob = await r2.blob();
+            const url = URL.createObjectURL(blob);
+
+            inlineEl = document.createElement('div');
+            inlineEl.className = 'attachment-inline';
+            if (isImage) {
+              const img = document.createElement('img');
+              img.src = url;
+              img.className = 'attachment-inline-img';
+              inlineEl.appendChild(img);
+            } else {
+              const iframe = document.createElement('iframe');
+              iframe.src = url;
+              iframe.className = 'attachment-inline-pdf';
+              iframe.title = a.filename;
+              inlineEl.appendChild(iframe);
+            }
+            chip.after(inlineEl);
+            chip.classList.add('attachment-chip--open');
+          } catch {
+            showToast('Could not open attachment');
+          } finally {
+            chip.textContent = `📎 ${a.filename}`;
           }
         });
         chips.appendChild(chip);
@@ -998,6 +1032,23 @@ function buildEmailCard(email, isNew = false) {
         chips.appendChild(chip);
         chips.appendChild(textEl);
       } else {
+        // Unknown file type — trigger download
+        chip.style.cursor = 'pointer';
+        chip.addEventListener('click', async () => {
+          if (!a.file_id) {
+            showToast('No download available for this file type');
+            return;
+          }
+          const r = await fetch(`${BACKEND_URL}/files/${encodeURIComponent(a.file_id)}/download`);
+          if (!r.ok) { showToast('Could not download attachment'); return; }
+          const blob = await r.blob();
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = a.filename;
+          anchor.click();
+          URL.revokeObjectURL(url);
+        });
         chips.appendChild(chip);
       }
     });
@@ -1421,26 +1472,6 @@ function closeReviewedEmailDrawer() {
 
 // ── Shared List ───────────────────────────────────────────────────────────────
 
-async function dedupTasks() {
-  const btn = document.getElementById('dedup-btn');
-  btn.disabled = true;
-  btn.textContent = 'Checking…';
-  try {
-    const res = await fetch(`${BACKEND_URL}/doc/dedup`, { method: 'POST' });
-    const data = await res.json();
-    if (data.removed > 0) {
-      showToast(`Removed ${data.removed} duplicate${data.removed === 1 ? '' : 's'}`);
-      loadListScreen();
-    } else {
-      showToast('No duplicates found');
-    }
-  } catch (err) {
-    showToast('Error removing duplicates');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Remove Duplicates';
-  }
-}
 
 function openListScreen() {
   document.getElementById('list-screen').classList.remove('hidden');
@@ -1453,8 +1484,9 @@ function closeListScreen() {
 
 async function loadListScreen() {
   const container = document.getElementById('list-screen-content');
-  container.innerHTML = '<div class="loading">Loading shared list...</div>';
+  container.innerHTML = '<div class="loading">Loading to-do list...</div>';
   try {
+    await fetch(`${BACKEND_URL}/doc/dedup`, { method: 'POST' }).catch(() => {});
     const res = await fetch(`${BACKEND_URL}/doc`);
     if (!res.ok) throw new Error('Failed to fetch doc');
     const data = await res.json();
@@ -2364,7 +2396,14 @@ function _buildCalendarEventRow(e) {
       ${assigneeBadge ? `<span class="cal-assignee-wrap">${assigneeBadge}</span>` : ''}
     </span>
     ${e.location ? `<span class="cal-event-location">${escapeHtml(e.location)}</span>` : ''}
+    ${e.source_email_id ? `<span class="cal-source-email-link" data-email-id="${escapeHtml(e.source_email_id)}">View email ↗</span>` : ''}
   `;
+  if (e.source_email_id) {
+    row.querySelector('.cal-source-email-link').addEventListener('click', ev => {
+      ev.stopPropagation();
+      _openEmailFromId(e.source_email_id);
+    });
+  }
 
   row.addEventListener('click', () => openCalendarEventEditDrawer(e));
   wrapper.appendChild(row);
@@ -2900,9 +2939,25 @@ function openEmailExcerptDrawer(email) {
   document.getElementById('email-excerpt-subject').textContent = email.subject || '(No Subject)';
   document.getElementById('email-excerpt-meta').textContent =
     `${email.sender}  ·  ${formatEmailDate(email.date)}`;
-  document.getElementById('email-excerpt-body').textContent = email.body || '(No body)';
+  const bodyEl = document.getElementById('email-excerpt-body');
+  bodyEl.textContent = email.body || '(No body)';
+  if (email.source_spans && email.source_spans.length > 0) {
+    _applyHighlights(bodyEl, email.source_spans);
+  }
   document.getElementById('email-excerpt-overlay').classList.remove('hidden');
   document.getElementById('email-excerpt-drawer').classList.remove('hidden');
+}
+
+async function _openEmailFromId(emailId) {
+  try {
+    const res = await fetch(`${BACKEND_URL}/email/${encodeURIComponent(emailId)}/excerpt`);
+    if (!res.ok) { showToast('Email not found'); return; }
+    const data = await res.json();
+    if (data.error) { showToast('Email not found'); return; }
+    openEmailExcerptDrawer(data);
+  } catch {
+    showToast('Could not load email');
+  }
 }
 
 function closeEmailExcerptDrawer() {
@@ -3427,7 +3482,7 @@ async function loadHanaDismissedEmails() {
   try {
     const res = await fetch(`${BACKEND_URL}/emails/hana-dismissed`);
     const data = await res.json();
-    const emails = data.emails || [];
+    const emails = (data.emails || []).sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
     if (emails.length === 0) {
       list.innerHTML = '<div class="empty-state">Nothing here — Hana hasn\'t dismissed anything recently, or everything looks right.</div>';
       return;

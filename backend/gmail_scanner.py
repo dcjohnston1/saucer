@@ -109,7 +109,59 @@ def _extract_html_body(payload):
     return ''
 
 
-_EXTRACTABLE_MIMES = {'application/pdf', 'image/jpeg', 'image/png'}
+_EXTRACTABLE_MIMES = {'application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+
+def _extract_inline_images(payload, service, user_id, msg_id):
+    """Walk MIME tree and return dict mapping content_id -> data URI for inline images."""
+    result = {}
+
+    def _walk(part):
+        cid = None
+        for h in part.get('headers', []):
+            if h.get('name', '').lower() == 'content-id':
+                cid = h['value'].strip().strip('<>').strip()
+        mime = part.get('mimeType', '')
+        if cid and mime.startswith('image/'):
+            body = part.get('body', {})
+            data = body.get('data')
+            if not data:
+                att_id = body.get('attachmentId')
+                if att_id:
+                    try:
+                        resp = service.users().messages().attachments().get(
+                            userId=user_id, messageId=msg_id, id=att_id
+                        ).execute()
+                        data = resp.get('data', '')
+                    except Exception:
+                        pass
+            if data:
+                # Gmail uses URL-safe base64; convert to standard for data URI
+                import base64 as _b64
+                raw = _b64.urlsafe_b64decode(data + '==')
+                b64_std = _b64.b64encode(raw).decode()
+                result[cid] = f'data:{mime};base64,{b64_std}'
+                # Also register with angle-bracket form in case HTML uses it
+                result[f'<{cid}>'] = result[cid]
+        for sub in part.get('parts', []):
+            _walk(sub)
+
+    _walk(payload)
+    return result
+
+
+def _substitute_cid_references(html, inline_images):
+    """Replace cid: references in HTML body with data URIs."""
+    if not inline_images or not html:
+        return html
+    import re
+
+    def _replace(match):
+        cid = match.group(1).strip()
+        return inline_images.get(cid, inline_images.get(f'<{cid}>', match.group(0)))
+
+    html = re.sub(r'src=["\']cid:([^"\']+)["\']', lambda m: f'src="{_replace(m)}"', html)
+    return html
+
 
 def _extract_attachments(payload, service, user_id, msg_id):
     """Walk MIME tree and return list of attachment dicts for PDF and image parts."""
@@ -188,6 +240,9 @@ def _scan_account(service, account_label, sender_filter=None, keyword_filter=Non
         body = _extract_body(message['payload'])
         html_body = _extract_html_body(message['payload'])
         attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
+        if html_body:
+            inline_imgs = _extract_inline_images(message['payload'], service, user_id, msg_id)
+            html_body = _substitute_cid_references(html_body, inline_imgs)
 
         email_list.append({
             'id': f"{account_label}:{msg_id}" if prefix_ids else msg_id,
@@ -269,6 +324,9 @@ def fetch_new_messages_since(service, start_history_id: str) -> tuple:
             body_text = _extract_body(message['payload'])
             html_body = _extract_html_body(message['payload'])
             attachments = _extract_attachments(message['payload'], service, user_id, msg_id)
+            if html_body:
+                inline_imgs = _extract_inline_images(message['payload'], service, user_id, msg_id)
+                html_body = _substitute_cid_references(html_body, inline_imgs)
             emails.append({
                 'id': msg_id,
                 'subject': subject,

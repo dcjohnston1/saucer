@@ -600,7 +600,8 @@ def accept_proposal(proposal_id):
                             title=p['title'],
                             date_expression=p['date_expression'],
                             notes=p.get('notes'),
-                            assignee_label=assignee_label
+                            assignee_label=assignee_label,
+                            source_email_id=email_id,
                         )
                     except Exception as e:
                         print(f"Calendar event creation failed: {e}")
@@ -1087,15 +1088,66 @@ def restore_dismissed_email(email_id):
 
 @app.route('/emails/<path:email_id>/attachment-file-id', methods=['GET'])
 def get_attachment_file_id(email_id):
-    """Look up the stored file_id for a PDF attachment by its deterministic MD5 key."""
+    """Return file_id for an attachment — fetching from Gmail and saving to GCS if not yet stored."""
+    import base64 as _b64
+    from gcs import upload_file
+    from datetime import datetime, timezone
+
     filename = request.args.get('filename', '')
     if not filename:
         return jsonify({'error': 'filename required'}), 400
+
     file_id = hashlib.md5(f"{email_id}:{filename}".encode()).hexdigest()
     doc = db.collection('hana_files').document(file_id).get()
-    if not doc.exists:
-        return jsonify({'error': 'Not found'}), 404
-    return jsonify({'file_id': file_id, 'url': f"/files/{file_id}/download"})
+    if doc.exists:
+        return jsonify({'file_id': file_id})
+
+    # Not in GCS yet — fetch from Gmail now.
+    try:
+        from gmail_scanner import _build_service, _extract_attachments
+        _EXTRACTABLE_MIMES = {'application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+
+        service = None
+        msg = None
+        for token_key in ('GMAIL_REFRESH_TOKEN', 'GMAIL_REFRESH_TOKEN_2'):
+            svc = _build_service(token_key)
+            if not svc:
+                continue
+            try:
+                msg = svc.users().messages().get(userId='me', messageId=email_id, format='full').execute()
+                service = svc
+                break
+            except Exception:
+                continue
+
+        if not msg or not service:
+            return jsonify({'error': 'Could not fetch message from Gmail'}), 404
+
+        attachments = _extract_attachments(msg.get('payload', {}), service, 'me', email_id)
+        target = next((a for a in attachments if a.get('filename') == filename), None)
+        if not target or not target.get('_pdf_bytes_b64'):
+            return jsonify({'error': 'Attachment not found in message'}), 404
+
+        mime = target.get('mime', 'application/pdf')
+        file_bytes = _b64.b64decode(target['_pdf_bytes_b64'])
+        gcs_path = f"files/{file_id}_{filename}"
+        if not upload_file(file_bytes, gcs_path, mime):
+            return jsonify({'error': 'GCS upload failed'}), 500
+
+        db.collection('hana_files').document(file_id).set({
+            'file_id': file_id,
+            'filename': filename,
+            'source': 'email',
+            'email_id': email_id,
+            'uploaded_at': datetime.now(timezone.utc).isoformat(),
+            'size_bytes': len(file_bytes),
+            'gcs_path': gcs_path,
+            'content_text': target.get('extracted_text', '')[:8000],
+        })
+        return jsonify({'file_id': file_id})
+    except Exception as ex:
+        print(f"[attachment-file-id] on-demand fetch error: {ex}")
+        return jsonify({'error': str(ex)}), 500
 
 
 # ── Relevant Files ────────────────────────────────────────────────────────────
@@ -1968,11 +2020,20 @@ def get_email_excerpt(email_id):
     for e in emails:
         if e['id'] == email_id:
             body = (e.get('body') or e.get('snippet') or '')[:2000]
+            proposals_all = read_json('saucer-proposals.json', {})
+            props = proposals_all.get(email_id, [])
+            source_spans = list({
+                span
+                for p in props
+                for span in (p.get('source_spans') or [])
+                if span
+            })
             return jsonify({
                 'subject': e.get('subject', ''),
                 'sender': e.get('sender', ''),
                 'date': e.get('date', ''),
                 'body': body,
+                'source_spans': source_spans,
             })
     return jsonify({'error': 'Not found'}), 404
 
@@ -2089,9 +2150,15 @@ def clear_hana_question():
 
 @app.route('/hana/notes', methods=['GET'])
 def get_hana_notes():
-    """Return all notes for display in the UI."""
+    """Return all notes for display in the UI, excluding internal filtering-feedback entries."""
     from memory import list_notes
-    return jsonify({"notes": list_notes()})
+    notes = list_notes()
+    filtered = [
+        n for n in notes
+        if 'email filtering' not in n.get('topic', '').lower()
+        and 'filtering feedback' not in n.get('topic', '').lower()
+    ]
+    return jsonify({"notes": filtered})
 
 
 @app.route('/hana/notes/<topic_slug>', methods=['DELETE'])

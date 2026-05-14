@@ -52,8 +52,10 @@ Merge these into a single cohesive note. Rules:
 - Add new facts from the new information
 - Update any facts that have changed (use the newer version)
 - Do not duplicate information
-- Write in warm, first-person prose as if these are your own private notes
-- Do not mention that this is a merge — just write the note naturally
+- Write as direct factual statements — never narrate the note's existence
+  Right: "Dan is allergic to shellfish and gluten."
+  Wrong: "My note about Dan's allergies is that he's allergic to shellfish and gluten."
+- Do not mention that this is a merge — just write the facts naturally
 - Keep it reasonably concise
 
 Return only the merged note text, nothing else."""

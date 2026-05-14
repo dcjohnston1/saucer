@@ -206,9 +206,12 @@ Format:
     "email_id": "<the EMAIL_ID value from the email>",
     "title": "<concise action item, under 60 chars>",
     "notes": "<brief context, or null>",
-    "date_expression": "<natural language date if mentioned, e.g. 'May 15' or 'this month', or null>"
+    "date_expression": "<natural language date if mentioned, e.g. 'May 15' or 'this month', or null>",
+    "source_spans": ["<verbatim sentence or short phrase from the email body that this to-do is based on>"]
   }
 ]
+
+source_spans must be exact substrings copied verbatim from the email body — do not paraphrase. Include 1-2 spans per item maximum.
 
 If no action items are found, return [].
 
@@ -229,11 +232,15 @@ Emails to review:
             eid = item.get('email_id')
             if not eid:
                 continue
+            spans = item.get('source_spans')
+            if not isinstance(spans, list):
+                spans = []
             result.setdefault(eid, []).append({
                 'id': str(uuid.uuid4()),
                 'title': item.get('title', ''),
                 'notes': item.get('notes') or '',
                 'date_expression': item.get('date_expression') or '',
+                'source_spans': spans,
                 'dismissed': False,
                 'accepted': False,
             })

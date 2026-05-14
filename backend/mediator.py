@@ -703,7 +703,10 @@ def process_message(user, message, history=None, user_email=None, conversation_i
         Args:
             topic: Short descriptive name for the subject (e.g. 'kids routines',
                    'grocery preferences', 'role division', 'Luis the cleaner').
-            content: What you learned, written in natural prose.
+            content: What you learned, as a direct factual statement. Never write
+                     "My note about X is that Y" — write "X is Y" directly.
+                     Example: "Dan is allergic to shellfish and gluten." not
+                     "My note about Dan's allergies is that he's allergic to..."
         """
         from memory import save_note
         result = save_note(topic, content)

@@ -186,20 +186,8 @@ def search_emails(query: str, limit: int = 3):
         query: Search term — sender name, subject keyword, or topic (e.g. "Brenda Bennett", "STAR testing", "Procare").
         limit: Maximum number of emails to return. Default 3.
     """
-    emails = read_json('saucer-emails.json', default=[])
-    q = query.lower()
-    matches = []
-    for e in emails:
-        haystack = ' '.join([
-            e.get('sender', ''),
-            e.get('subject', ''),
-            e.get('body', '') or e.get('snippet', ''),
-        ]).lower()
-        tokens = q.split()
-        if all(t in haystack for t in tokens):
-            matches.append(e)
-    matches.sort(key=lambda e: e.get('date', ''), reverse=True)
-    results = matches[:limit]
+    from email_store import search_emails_text
+    results = search_emails_text(query, limit=limit)
     if not results:
         return {"results": [], "message": f"No emails found matching '{query}'."}
     formatted = []

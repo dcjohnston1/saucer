@@ -27,6 +27,7 @@ Manual test (from Cloud Shell):
     -H "Content-Type: application/json" -d '{}'
 """
 
+import hashlib
 import os
 import sys
 import uuid
@@ -38,6 +39,7 @@ from google.cloud import firestore as _firestore
 
 from gcs import read_json, write_json
 from logger import log_action, get_action_summary
+import email_store as _email_store
 from mediator import (
     _load_user_context,
     _load_household_profile,
@@ -227,7 +229,7 @@ def _log_gemini_decision_sync(action_type, input_context, context_consulted,
         return ''
 
 
-def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt: str = None):
+def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt: str = None, notes_consulted: list = None):
     def add_todo_logged(
         title: str,
         date_expression: str = None,
@@ -290,6 +292,7 @@ def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt:
                 user_email='agent',
                 full_prompt=full_prompt,
                 tool_arguments={'title': title, 'date_expression': date_expression, 'assignee': assignee, 'reasoning': reasoning},
+                notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
             )
             if dec_id:
                 agent_state['decision_ids'].append(dec_id)
@@ -297,7 +300,7 @@ def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt:
     return add_todo_logged
 
 
-def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt: str = None):
+def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt: str = None, notes_consulted: list = None):
     def reassign_task(title: str, new_assignee: str, reasoning: str = None):
         """Reassign an existing task in the Google Doc to a different household member.
 
@@ -320,6 +323,7 @@ def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt:
             user_email='agent',
             full_prompt=full_prompt,
             tool_arguments={'title': title, 'new_assignee': new_assignee, 'reasoning': reasoning},
+            notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
         )
         if dec_id:
             agent_state['decision_ids'].append(dec_id)
@@ -327,7 +331,7 @@ def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt:
     return reassign_task
 
 
-def _make_agent_dismiss_email(agent_state: dict, full_prompt: str = None):
+def _make_agent_dismiss_email(agent_state: dict, full_prompt: str = None, notes_consulted: list = None):
     def dismiss_email(email_id: str, reasoning: str = None):
         """Dismiss an email so it won't appear in the inbox.
 
@@ -352,6 +356,7 @@ def _make_agent_dismiss_email(agent_state: dict, full_prompt: str = None):
                 user_email='agent',
                 full_prompt=full_prompt,
                 tool_arguments={'email_id': email_id, 'reasoning': reasoning},
+                notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
             )
             if dec_id:
                 agent_state['decision_ids'].append(dec_id)
@@ -376,6 +381,31 @@ def _make_agent_save_note():
         from memory import save_note
         return save_note(topic, content)
     return save_note_agent
+
+
+def _make_agent_search_memory(notes_consulted: list):
+    def search_memory_agent(query: str):
+        """Search Hana's notes for household context relevant to a query.
+
+        Call this before assigning a task, deciding who handles a responsibility,
+        or when you need household context not present in the system prompt.
+
+        Args:
+            query: A few words describing what you're looking for
+                   (e.g. 'school pickup', 'food allergies', 'Dan preferences').
+        """
+        from memory import search_memory
+        results = search_memory(query)
+        try:
+            for r in results:
+                notes_consulted.append({
+                    'topic': r.get('topic', ''),
+                    'content_hash': hashlib.sha256(r.get('content', '').encode()).hexdigest()[:16],
+                })
+        except Exception as e:
+            print(f'[agent] notes_consulted tracking failed: {e}', file=sys.stderr)
+        return results
+    return search_memory_agent
 
 
 def _make_agent_queue_question():
@@ -477,9 +507,11 @@ def process_single_email(email: dict) -> str:
         'decision_ids': [],
     }
 
-    add_todo_tool = _make_agent_add_todo(agent_state, context_available, full_system)
-    reassign_tool = _make_agent_reassign(agent_state, context_available, full_system)
-    dismiss_tool = _make_agent_dismiss_email(agent_state, full_system)
+    notes_consulted = []
+    add_todo_tool = _make_agent_add_todo(agent_state, context_available, full_system, notes_consulted)
+    reassign_tool = _make_agent_reassign(agent_state, context_available, full_system, notes_consulted)
+    dismiss_tool = _make_agent_dismiss_email(agent_state, full_system, notes_consulted)
+    search_memory_tool = _make_agent_search_memory(notes_consulted)
     write_briefing_tool = _make_write_briefing(db, agent_state, [email])
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()
@@ -488,7 +520,7 @@ def process_single_email(email: dict) -> str:
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
         tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool,
-               save_note_tool, queue_question_tool],
+               save_note_tool, search_memory_tool, queue_question_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)
@@ -516,7 +548,13 @@ def run_morning_agent() -> str:
 
     print(f"[agent] Overnight window: {since_dt.isoformat()} → {now_utc.isoformat()}")
 
-    all_emails = read_json('saucer-emails.json', [])
+    all_emails = _email_store.list_emails(
+        limit=2000,
+        exclude_dismissed=False,
+        exclude_reviewed=False,
+        exclude_blocked_verdict=False,
+        include_body=True,
+    )
     overnight_emails = [
         e for e in all_emails
         if _parse_email_date(e.get('date', '')) > since_dt
@@ -571,9 +609,11 @@ def run_morning_agent() -> str:
         'decision_ids': [],
     }
 
-    add_todo_tool = _make_agent_add_todo(agent_state, context_available, full_system)
-    reassign_tool = _make_agent_reassign(agent_state, context_available, full_system)
-    dismiss_tool = _make_agent_dismiss_email(agent_state, full_system)
+    notes_consulted = []
+    add_todo_tool = _make_agent_add_todo(agent_state, context_available, full_system, notes_consulted)
+    reassign_tool = _make_agent_reassign(agent_state, context_available, full_system, notes_consulted)
+    dismiss_tool = _make_agent_dismiss_email(agent_state, full_system, notes_consulted)
+    search_memory_tool = _make_agent_search_memory(notes_consulted)
     write_briefing_tool = _make_write_briefing(db, agent_state, overnight_emails)
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()
@@ -582,7 +622,7 @@ def run_morning_agent() -> str:
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
         tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool,
-               save_note_tool, queue_question_tool],
+               save_note_tool, search_memory_tool, queue_question_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)

@@ -7,6 +7,7 @@ from flask_cors import CORS
 from google.cloud import firestore
 from mediator import process_message
 from logger import log_action, get_recent_actions, get_action_summary, get_recent_decisions
+import email_store
 
 app = Flask(__name__)
 CORS(app)
@@ -199,7 +200,6 @@ def _backfill(sender_filter=None, keyword_filter=None):
     """Scan the last 90 days for a newly added sender or keyword and merge into stored emails."""
     try:
         from gmail_scanner import scan_emails
-        from gcs import read_json, write_json
         from datetime import datetime, timedelta, timezone
         after_ts = (datetime.now(timezone.utc) - timedelta(days=90)).timestamp()
         new_emails = scan_emails(
@@ -208,10 +208,10 @@ def _backfill(sender_filter=None, keyword_filter=None):
             after_timestamp=after_ts
         )
         if new_emails:
-            stored = read_json('saucer-emails.json', [])
-            new_ids = {e['id'] for e in new_emails}
-            merged = new_emails + [e for e in stored if e['id'] not in new_ids]
-            write_json('saucer-emails.json', merged)
+            fresh = [e for e in new_emails if not email_store.email_exists(e['id'])]
+            if fresh:
+                _strip_raw_bytes(fresh)
+                email_store.upsert_emails_batch(fresh)
     except Exception as e:
         print(f"Backfill error: {e}")
 
@@ -316,7 +316,6 @@ def get_emails():
     kw_doc = db.collection('settings').document('keyword_filters').get()
     keywords = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
 
-    # Always include self-sent emails (from:me = from the authenticated account)
     effective_filters = (filters + ['me']) if filters else None
     new_emails = scan_emails(
         sender_filter=effective_filters,
@@ -324,54 +323,53 @@ def get_emails():
         after_timestamp=after_ts
     )
 
-    stored = read_json('saucer-emails.json', [])
-    new_ids = {e['id'] for e in new_emails}
-    merged = new_emails + [e for e in stored if e['id'] not in new_ids]
-
-    # Apply 60-day TTL: drop dismissed emails older than 60 days
-    dismissed_set = set(read_json('saucer-dismissed.json', []))
-    ttl_cutoff = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
-    merged = [
-        e for e in merged
-        if e['id'] not in dismissed_set or (e.get('date') or '') >= ttl_cutoff
-    ]
-
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
     write_json('saucer-config.json', config)
 
-    # Intent-based filtering: evaluate emails that don't have a verdict yet
     email_intent = _get_email_intent(db)
     blocked_set = _get_blocked_senders_set(db)
     permitted_list = _get_permitted_senders_list(db)
     excluded_keywords = _get_excluded_keywords(db)
-    _run_intent_eval_batch(merged, email_intent, blocked_set, permitted_list, excluded_keywords=excluded_keywords)
 
-    # Auto-save PDF attachments from newly permitted emails (needs raw bytes)
-    _auto_save_pdf_attachments(merged, db)
+    # Intent eval, PDF auto-save, and byte-strip run on new emails before upserting
+    _run_intent_eval_batch(new_emails, email_intent, blocked_set, permitted_list, excluded_keywords=excluded_keywords)
+    _auto_save_pdf_attachments(new_emails, db)
+    _strip_raw_bytes(new_emails)
+    for e in new_emails:
+        email_store.upsert_email(e)
 
-    # Strip raw bytes and write to GCS
-    _strip_raw_bytes(merged)
-    write_json('saucer-emails.json', merged)
-
-    # Generate summaries for emails that lack one or have a vague/short one (cap at 10 per request)
-    to_summarize = [e for e in merged if _is_vague_summary(e.get('summary'))][:10]
-    if to_summarize:
+    # Generate summaries for visible emails that lack one (cap at 10 per request)
+    visible_meta = email_store.list_emails(
+        exclude_dismissed=True,
+        exclude_reviewed=True,
+        exclude_blocked_verdict=True,
+        include_body=False,
+    )
+    to_summarize_ids = [e['id'] for e in visible_meta if _is_vague_summary(e.get('summary'))][:10]
+    if to_summarize_ids:
         from email_scanner import summarize_emails
-        summaries = summarize_emails(to_summarize)
+        to_summarize_with_body = email_store.get_emails_by_ids(to_summarize_ids)
+        summaries = summarize_emails(to_summarize_with_body)
         if summaries:
-            for e in merged:
-                if e['id'] in summaries:
-                    e['summary'] = summaries[e['id']]
-            write_json('saucer-emails.json', merged)
+            for eid, summary in summaries.items():
+                email_store.update_email_fields(eid, {'summary': summary})
 
-    # Apply exclude keywords
     excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
     exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
     print(f"[/emails] exclude_keywords: {exclude_keywords}")
 
-    dismissed = set(read_json('saucer-dismissed.json', []))
-    reviewed = set(read_json('saucer-reviewed.json', []))
-    visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
+    visible = email_store.list_emails(
+        exclude_dismissed=True,
+        exclude_reviewed=True,
+        exclude_blocked_verdict=True,
+        include_body=True,
+    )
+
+    # Re-apply summaries updated above (in-memory refresh)
+    if to_summarize_ids and summaries:
+        for e in visible:
+            if e['id'] in summaries:
+                e['summary'] = summaries[e['id']]
 
     if exclude_keywords:
         before_count = len(visible)
@@ -385,13 +383,9 @@ def get_emails():
         visible = [e for e in visible if not _matches_exclude(e)]
         print(f"[/emails] exclude filter: {before_count} -> {len(visible)} emails")
 
-    # Hard block: blocked senders always hidden
     if blocked_set:
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
-
-    # Intent verdict: only show permitted and uncertain (hide blocked)
-    visible = [e for e in visible if e.get('verdict', 'permitted') != 'blocked']
 
     # Scan unscanned emails for to-do proposals (cap at 10 per request)
     scanned = set(read_json('saucer-scanned.json', []))
@@ -432,18 +426,23 @@ def get_emails():
 
 @app.route('/emails/cached', methods=['GET'])
 def get_cached_emails():
-    """Return stored emails from GCS without triggering a Gmail scan."""
+    """Return stored emails from Firestore/GCS without triggering a Gmail scan."""
     from gcs import read_json
-
-    stored = read_json('saucer-emails.json', [])
-    dismissed = set(read_json('saucer-dismissed.json', []))
-    reviewed = set(read_json('saucer-reviewed.json', []))
-    visible = [e for e in stored if e['id'] not in dismissed and e['id'] not in reviewed]
 
     db = get_db()
 
     excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
     exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
+
+    blocked_set = _get_blocked_senders_set(db)
+
+    visible = email_store.list_emails(
+        exclude_dismissed=True,
+        exclude_reviewed=True,
+        exclude_blocked_verdict=True,
+        include_body=True,
+    )
+
     if exclude_keywords:
         def _matches_exclude_cached(e):
             haystack = ' '.join([
@@ -454,13 +453,9 @@ def get_cached_emails():
             return any(kw in haystack for kw in exclude_keywords)
         visible = [e for e in visible if not _matches_exclude_cached(e)]
 
-    blocked_set = _get_blocked_senders_set(db)
     if blocked_set:
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
-
-    # Intent verdict: only show permitted and uncertain
-    visible = [e for e in visible if e.get('verdict', 'permitted') != 'blocked']
 
     proposals = read_json('saucer-proposals.json', {})
     for e in visible:
@@ -473,9 +468,8 @@ def get_cached_emails():
 
 @app.route('/emails/resync', methods=['POST'])
 def resync_emails():
-    """Force a 90-day re-scan regardless of last_sync_timestamp."""
+    """Force a 90-day re-scan and re-evaluate all emails."""
     from gmail_scanner import scan_emails
-    from email_scanner import scan_emails_for_todos
     from gcs import read_json, write_json
     from datetime import datetime, timedelta, timezone
 
@@ -493,35 +487,45 @@ def resync_emails():
         after_timestamp=after_ts
     )
 
-    stored = read_json('saucer-emails.json', [])
-    new_ids = {e['id'] for e in new_emails}
-    merged = new_emails + [e for e in stored if e['id'] not in new_ids]
-
     config = read_json('saucer-config.json', {})
     config['last_sync_timestamp'] = datetime.now(timezone.utc).timestamp()
     write_json('saucer-config.json', config)
 
-    # Force re-evaluate ALL emails against current intent (not just new/unverdicted ones)
     email_intent = _get_email_intent(db)
     blocked_set = _get_blocked_senders_set(db)
     permitted_list = _get_permitted_senders_list(db)
     excluded_keywords = _get_excluded_keywords(db)
-    eval_counts = _force_reevaluate_all_emails(merged, email_intent, excluded_keywords, blocked_set, set(permitted_list))
+
+    # Force re-evaluate all stored emails
+    all_stored = email_store.list_emails(
+        limit=2000,
+        exclude_dismissed=False,
+        exclude_reviewed=False,
+        exclude_blocked_verdict=False,
+        include_body=False,
+    )
+    # Merge new emails in-memory for batch re-eval
+    stored_ids = {e['id'] for e in all_stored}
+    merged_for_eval = new_emails + [e for e in all_stored if e['id'] not in {e2['id'] for e2 in new_emails}]
+    eval_counts = _force_reevaluate_all_emails(merged_for_eval, email_intent, excluded_keywords, blocked_set, set(permitted_list))
     print(f"[resync] re-eval complete: {eval_counts}")
-    _auto_save_pdf_attachments(merged, db)
-    _strip_raw_bytes(merged)
-    write_json('saucer-emails.json', merged)
 
-    dismissed = set(read_json('saucer-dismissed.json', []))
-    reviewed = set(read_json('saucer-reviewed.json', []))
-    visible = [e for e in merged if e['id'] not in dismissed and e['id'] not in reviewed]
+    _auto_save_pdf_attachments(merged_for_eval, db)
+    _strip_raw_bytes(merged_for_eval)
 
-    # excluded_keywords already applied during _force_reevaluate_all_emails; use verdict to filter
+    for e in merged_for_eval:
+        email_store.upsert_email(e)
+
+    visible = email_store.list_emails(
+        exclude_dismissed=True,
+        exclude_reviewed=True,
+        exclude_blocked_verdict=True,
+        include_body=True,
+    )
+
     if blocked_set:
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
-
-    visible = [e for e in visible if e.get('verdict', 'permitted') != 'blocked']
 
     proposals_data = read_json('saucer-proposals.json', {})
     for e in visible:
@@ -538,8 +542,9 @@ def get_proposals():
     from gcs import read_json
 
     proposals = read_json('saucer-proposals.json', {})
-    emails = read_json('saucer-emails.json', [])
-    email_meta = {e['id']: {'subject': e.get('subject', ''), 'sender': e.get('sender', '')} for e in emails}
+    proposal_email_ids = list(proposals.keys())
+    fetched = email_store.get_emails_by_ids(proposal_email_ids)
+    email_meta = {e['id']: {'subject': e.get('subject', ''), 'sender': e.get('sender', '')} for e in fetched}
 
     active = []
     for email_id, plist in proposals.items():
@@ -639,13 +644,7 @@ def dismiss_email(email_id):
     if email_id not in dismissed:
         dismissed.append(email_id)
         write_json('saucer-dismissed.json', dismissed)
-    # Mark dismissed_by='user' on the email object
-    emails = read_json('saucer-emails.json', [])
-    for e in emails:
-        if e['id'] == email_id:
-            e['dismissed_by'] = 'user'
-            write_json('saucer-emails.json', emails)
-            break
+    email_store.update_email_fields(email_id, {'dismissed_by': 'user'})
     user = _req_user()
     log_action(user, 'email_dismissed', {'email_id': email_id}, actor='user')
     return jsonify({'ok': True})
@@ -666,7 +665,6 @@ def review_email(email_id):
 
 @app.route('/reviewed-emails', methods=['GET'])
 def get_reviewed_emails():
-    from gcs import read_json
     from datetime import datetime, timedelta, timezone
 
     since_30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -690,8 +688,9 @@ def get_reviewed_emails():
                 'actor': a.get('actor', 'user'),
             }
 
-    all_emails = read_json('saucer-emails.json', [])
-    email_map = {e['id']: e for e in all_emails}
+    action_email_ids = list(email_action_map.keys())
+    fetched_emails = email_store.get_emails_by_ids(action_email_ids)
+    email_map = {e['id']: e for e in fetched_emails}
 
     result = []
     for eid, action_info in email_action_map.items():
@@ -882,16 +881,10 @@ def dismiss_email_with_feedback(email_id):
         dismissed.append(email_id)
         write_json('saucer-dismissed.json', dismissed)
 
-    # Find email metadata and mark dismissed_by='user'
-    emails = read_json('saucer-emails.json', [])
-    email_meta = {}
-    for e in emails:
-        if e['id'] == email_id:
-            email_meta = e
-            e['dismissed_by'] = 'user'
-            break
+    # Fetch metadata and mark dismissed_by='user' in Firestore
+    email_meta = email_store.get_email(email_id) or {}
     if email_meta:
-        write_json('saucer-emails.json', emails)
+        email_store.update_email_fields(email_id, {'dismissed_by': 'user'})
 
     # Store feedback in Firestore
     db = get_db()
@@ -928,17 +921,15 @@ def dismiss_email_with_feedback(email_id):
 @app.route('/emails/hana-dismissed', methods=['GET'])
 def get_hana_dismissed_emails():
     """Return emails Hana dismissed (dismissed_by=hana AND verdict=blocked), last 90 days, sorted by date desc."""
-    from gcs import read_json
     from datetime import datetime, timedelta, timezone
-    emails = read_json('saucer-emails.json', [])
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    hana_dismissed = [
-        e for e in emails
-        if e.get('dismissed_by') == 'hana'
-        and e.get('verdict') == 'blocked'
-        and (e.get('date') or '') >= cutoff
-    ]
-    hana_dismissed.sort(key=lambda x: x.get('date', ''), reverse=True)
+    hana_dismissed = email_store.list_emails_filtered(
+        verdict='blocked',
+        dismissed_by='hana',
+        after_date_iso=cutoff,
+        limit=500,
+        include_body=False,
+    )
     return jsonify({'emails': [{
         'id': e['id'],
         'sender': e.get('sender', ''),
@@ -975,16 +966,16 @@ def get_dismissed_review():
         return jsonify({'emails': [], 'message': 'No intent description set — add one in Email Filters to use this feature.'})
 
     dismissed_ids = set(read_json('saucer-dismissed.json', []))
-    all_emails = read_json('saucer-emails.json', [])
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    # Only user-dismissed emails (not Hana's verdict=blocked ones)
-    candidates = [
-        e for e in all_emails
-        if e['id'] in dismissed_ids
-        and e.get('dismissed_by') != 'hana'
-        and (e.get('date') or '') >= cutoff
-    ]
+    # User-dismissed only (not Hana's verdict=blocked ones); must also be in dismissed list
+    candidate_metas = email_store.list_emails_filtered(
+        after_date_iso=cutoff,
+        dismissed_by_not='hana',
+        limit=500,
+        include_body=True,
+    )
+    candidates = [e for e in candidate_metas if e['id'] in dismissed_ids]
 
     results = []
     permitted_set = set(permitted_list)
@@ -1013,10 +1004,8 @@ def get_dismissed_review():
 @app.route('/emails/<path:email_id>/topic-phrase', methods=['GET'])
 def get_email_topic_phrase(email_id):
     """Return a short noun phrase describing the main topic of an email (for dismissal UI)."""
-    from gcs import read_json
     from email_scanner import extract_topic_noun_phrase
-    emails = read_json('saucer-emails.json', [])
-    email = next((e for e in emails if e['id'] == email_id), None)
+    email = email_store.get_email(email_id)
     if not email:
         return jsonify({'phrase': None})
     try:
@@ -1068,19 +1057,18 @@ def get_email_highlights(email_id):
 def restore_dismissed_email(email_id):
     """Remove an email from the dismissed list to restore it to the inbox."""
     from gcs import read_json, write_json
+    from google.cloud.firestore import DELETE_FIELD
     dismissed = read_json('saucer-dismissed.json', [])
     if email_id in dismissed:
         dismissed.remove(email_id)
         write_json('saucer-dismissed.json', dismissed)
-    # Clear dismissed_by and reset blocked verdict so the email reappears in inbox
-    emails = read_json('saucer-emails.json', [])
-    for e in emails:
-        if e['id'] == email_id:
-            e.pop('dismissed_by', None)
-            if e.get('verdict') == 'blocked':
-                e['verdict'] = 'uncertain'
-            write_json('saucer-emails.json', emails)
-            break
+    # Clear dismissed_by; reset blocked verdict to uncertain so email reappears
+    existing = email_store.get_email(email_id)
+    if existing:
+        fields = {'dismissed_by': DELETE_FIELD}
+        if existing.get('verdict') == 'blocked':
+            fields['verdict'] = 'uncertain'
+        email_store.update_email_fields(email_id, fields)
     user = _req_user()
     log_action(user, 'email_restored', {'email_id': email_id}, actor='user')
     return jsonify({'ok': True})
@@ -1440,11 +1428,9 @@ def get_stats():
 
 @app.route('/emails/<path:email_id>', methods=['GET'])
 def get_email_by_id(email_id):
-    from gcs import read_json
-    emails = read_json('saucer-emails.json', [])
-    for e in emails:
-        if e['id'] == email_id:
-            return jsonify({'email': e})
+    e = email_store.get_email(email_id)
+    if e:
+        return jsonify({'email': e})
     return jsonify({'error': 'Not found'}), 404
 
 
@@ -1887,13 +1873,11 @@ def agent_email_trigger():
     _auto_save_pdf_attachments(new_emails, db)
     _strip_raw_bytes(new_emails)
 
-    # Merge into stored emails so they appear in the app immediately
-    stored = read_json('saucer-emails.json', [])
-    existing_ids = {e['id'] for e in stored}
-    fresh = [e for e in new_emails if e['id'] not in existing_ids]
+    # Merge new emails into email store so they appear in the app immediately
+    fresh = [e for e in new_emails if not email_store.email_exists(e['id'])]
     if fresh:
-        write_json('saucer-emails.json', fresh + stored)
-    print(f"[email-trigger] merged {len(fresh)} new emails into saucer-emails.json, total now {len(fresh) + len(stored)}")
+        email_store.upsert_emails_batch(fresh)
+    print(f"[email-trigger] upserted {len(fresh)} new emails into Firestore")
 
     def _sender_matches(sender_str):
         raw = sender_str.lower()
@@ -2017,26 +2001,25 @@ def save_session_checkpoint():
 @app.route('/email/<path:email_id>/excerpt', methods=['GET'])
 def get_email_excerpt(email_id):
     from gcs import read_json
-    emails = read_json('saucer-emails.json', [])
-    for e in emails:
-        if e['id'] == email_id:
-            body = (e.get('body') or e.get('snippet') or '')[:2000]
-            proposals_all = read_json('saucer-proposals.json', {})
-            props = proposals_all.get(email_id, [])
-            source_spans = list({
-                span
-                for p in props
-                for span in (p.get('source_spans') or [])
-                if span
-            })
-            return jsonify({
-                'subject': e.get('subject', ''),
-                'sender': e.get('sender', ''),
-                'date': e.get('date', ''),
-                'body': body,
-                'source_spans': source_spans,
-            })
-    return jsonify({'error': 'Not found'}), 404
+    e = email_store.get_email(email_id)
+    if not e:
+        return jsonify({'error': 'Not found'}), 404
+    body = (e.get('body') or e.get('snippet') or '')[:2000]
+    proposals_all = read_json('saucer-proposals.json', {})
+    props = proposals_all.get(email_id, [])
+    source_spans = list({
+        span
+        for p in props
+        for span in (p.get('source_spans') or [])
+        if span
+    })
+    return jsonify({
+        'subject': e.get('subject', ''),
+        'sender': e.get('sender', ''),
+        'date': e.get('date', ''),
+        'body': body,
+        'source_spans': source_spans,
+    })
 
 
 @app.route('/debug/config', methods=['GET'])

@@ -312,7 +312,6 @@ def get_doc():
 @app.route('/emails', methods=['GET'])
 def get_emails():
     from gmail_scanner import scan_emails
-    from email_scanner import scan_emails_for_todos
     from gcs import read_json, write_json
     from datetime import datetime, timedelta, timezone
 
@@ -403,48 +402,12 @@ def get_emails():
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
 
-    # Scan unscanned emails for to-do proposals (cap at 10 per request)
-    scanned = set(read_json('saucer-scanned.json', []))
-    proposals = read_json('saucer-proposals.json', {})
-    to_scan = [e for e in visible if e['id'] not in scanned][:10]
-    if to_scan:
-        new_proposals = scan_emails_for_todos(to_scan)
-        # Deduplicate: skip proposals whose title already exists in proposals or the Google Doc
-        from gdocs import read_doc as _read_doc
-        doc_content = _read_doc()
-        doc_titles = set()
-        for _line in doc_content.split('\n'):
-            _parts = [x.strip() for x in _line.split('|')]
-            if len(_parts) > 1 and _line.strip():
-                doc_titles.add(_parts[1].strip().lower())
-        existing_titles = {p['title'].strip().lower() for plist in proposals.values() for p in plist} | doc_titles
-        for email_id, plist in new_proposals.items():
-            deduped = []
-            for p in plist:
-                norm = p['title'].strip().lower()
-                if norm not in existing_titles:
-                    deduped.append(p)
-                    existing_titles.add(norm)
-            proposals.setdefault(email_id, []).extend(deduped)
-        for e in to_scan:
-            scanned.add(e['id'])
-            proposals.setdefault(e['id'], [])
-        write_json('saucer-proposals.json', proposals)
-        write_json('saucer-scanned.json', list(scanned))
-
-    for e in visible:
-        all_props = proposals.get(e['id'])
-        if all_props is not None:
-            e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
-
     return jsonify({'emails': visible})
 
 
 @app.route('/emails/cached', methods=['GET'])
 def get_cached_emails():
     """Return stored emails from Firestore/GCS without triggering a Gmail scan."""
-    from gcs import read_json
-
     db = get_db()
 
     excl_doc = db.collection('settings').document('exclude_keyword_filters').get()
@@ -472,12 +435,6 @@ def get_cached_emails():
     if blocked_set:
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
-
-    proposals = read_json('saucer-proposals.json', {})
-    for e in visible:
-        all_props = proposals.get(e['id'])
-        if all_props is not None:
-            e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
 
     return jsonify({'emails': visible})
 
@@ -543,114 +500,7 @@ def resync_emails():
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
 
-    proposals_data = read_json('saucer-proposals.json', {})
-    for e in visible:
-        all_props = proposals_data.get(e['id'])
-        if all_props is not None:
-            e['proposals'] = [p for p in all_props if not p.get('dismissed') and not p.get('accepted')]
     return jsonify({'emails': visible, 'synced': len(new_emails), 'eval_counts': eval_counts})
-
-
-# DEPRECATED: proposals flow replaced by direct Google Doc writes with source:ai-suggested
-# TODO: remove in next sprint once inline email proposals are also removed from frontend
-@app.route('/proposals', methods=['GET'])
-def get_proposals():
-    from gcs import read_json
-
-    proposals = read_json('saucer-proposals.json', {})
-    proposal_email_ids = list(proposals.keys())
-    fetched = email_store.get_emails_by_ids(proposal_email_ids)
-    email_meta = {e['id']: {'subject': e.get('subject', ''), 'sender': e.get('sender', '')} for e in fetched}
-
-    active = []
-    for email_id, plist in proposals.items():
-        meta = email_meta.get(email_id, {})
-        for p in plist:
-            if not p.get('dismissed') and not p.get('accepted'):
-                active.append({
-                    'id': p['id'],
-                    'title': p['title'],
-                    'notes': p.get('notes', ''),
-                    'date_expression': p.get('date_expression', ''),
-                    'email_subject': meta.get('subject', ''),
-                    'email_sender': meta.get('sender', ''),
-                })
-
-    return jsonify({'proposals': active})
-
-
-# DEPRECATED: see /proposals GET above
-@app.route('/proposals/<proposal_id>/accept', methods=['POST'])
-def accept_proposal(proposal_id):
-    from gcs import read_json, write_json
-    from mediator import add_todo
-    from gdocs import read_doc
-
-    data = request.get_json() or {}
-    assignee = data.get('assignee') or None
-
-    proposals = read_json('saucer-proposals.json', {})
-    for email_id, plist in proposals.items():
-        for p in plist:
-            if p['id'] == proposal_id:
-                # Check for duplicate in Google Doc before appending
-                doc = read_doc()
-                title_norm = p['title'].strip().lower()
-                already_exists = any(
-                    len(parts) > 1 and parts[1].strip().lower() == title_norm
-                    for parts in ([x.strip() for x in line.split('|')] for line in doc.split('\n') if line.strip())
-                )
-                if not already_exists:
-                    add_todo(
-                        title=p['title'],
-                        date_expression=p.get('date_expression') or None,
-                        notes=p.get('notes') or None,
-                        assignee=assignee,
-                        source_email_id=email_id,
-                    )
-                if p.get('date_expression'):
-                    try:
-                        from gcalendar import create_event
-                        label_map = {
-                            'dcjohnston1@gmail.com': 'Daniel',
-                            'emily.osteen.johnston@gmail.com': 'Emily',
-                            'both': 'Both',
-                        }
-                        assignee_label = label_map.get(assignee, assignee)
-                        create_event(
-                            title=p['title'],
-                            date_expression=p['date_expression'],
-                            notes=p.get('notes'),
-                            assignee_label=assignee_label,
-                            source_email_id=email_id,
-                        )
-                    except Exception as e:
-                        print(f"Calendar event creation failed: {e}")
-                p['accepted'] = True
-                write_json('saucer-proposals.json', proposals)
-                user = _req_user(data)
-                log_action(user, 'proposal_accepted', {'proposal_id': proposal_id, 'title': p['title'], 'assignee': assignee}, actor='user')
-                return jsonify({'ok': True})
-
-    return jsonify({'error': 'Proposal not found'}), 404
-
-
-# DEPRECATED: see /proposals GET above
-@app.route('/proposals/<proposal_id>', methods=['DELETE'])
-def dismiss_proposal(proposal_id):
-    from gcs import read_json, write_json
-
-    proposals = read_json('saucer-proposals.json', {})
-    for email_id, plist in proposals.items():
-        for p in plist:
-            if p['id'] == proposal_id:
-                p['dismissed'] = True
-                write_json('saucer-proposals.json', proposals)
-                user = _req_user()
-                log_action(user, 'proposal_dismissed', {'proposal_id': proposal_id, 'title': p['title']}, actor='user')
-                return jsonify({'ok': True})
-
-    return jsonify({'error': 'Proposal not found'}), 404
 
 
 @app.route('/emails/<email_id>/dismiss', methods=['DELETE'])
@@ -1591,38 +1441,6 @@ def remove_blocked_topic(topic_id):
     return jsonify({'ok': True})
 
 
-def _load_blocked_topics_by_sender(db):
-    """Return dict mapping sender -> list of labels for topic-blocked senders."""
-    docs = db.collection('blocked_topics').stream()
-    by_sender = {}
-    for doc in docs:
-        d = doc.to_dict()
-        sender = d.get('sender', '').lower()
-        if sender:
-            by_sender.setdefault(sender, []).append(d.get('label', ''))
-    return by_sender
-
-
-def _topic_blocked(email_dict, blocked_topics_by_sender) -> bool:
-    """Return True if the email matches any blocked topic rule for its sender."""
-    sender = email_dict.get('sender', '').lower()
-    if not sender:
-        return False
-    labels = blocked_topics_by_sender.get(sender, [])
-    if not labels:
-        return False
-    subject = email_dict.get('subject', '')
-    preview = (email_dict.get('body') or email_dict.get('snippet') or '')[:300]
-    for label in labels:
-        prompt = (
-            f"Does this email match the topic '{label}'? "
-            f"Subject: '{subject}'. Preview: '{preview}'. "
-            f"Answer only yes or no."
-        )
-        answer = _gemini_text(prompt).lower()
-        if answer.startswith('yes'):
-            return True
-    return False
 
 
 @app.route('/calendar/events', methods=['GET'])

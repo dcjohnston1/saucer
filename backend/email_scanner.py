@@ -6,6 +6,23 @@ import google.generativeai as genai
 
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 
+# Shared verdict rules injected into both evaluate_email_intent() and
+# batch_evaluate_emails_intent(). Update here to change behavior in both paths.
+_INTENT_VERDICT_RULES = (
+    'Verdict rules — apply in this order:\n'
+    '1. Content clearly matches intent → "permitted". Reason: one sentence naming the specific intent category.\n'
+    '2. Content genuinely ambiguous — email mentions a relevant topic but primary purpose is unclear or mixed → "uncertain". '
+    'Use sparingly; only when you truly cannot tell. '
+    'Example: a school email that also promotes a fundraiser. '
+    'Reason: one specific sentence naming the sender, topic, and the exact tension. '
+    'Good: "City of Decatur email promoting a summer concert series — could relate to family activities but appears to be a general public event." '
+    'Bad: "Not sure if this matches." "Could be relevant."\n'
+    '3. Content clearly does not match intent → "blocked". '
+    'Includes ALL promotional/retail/marketing emails, professional newsletters, and industry digests, even from trusted senders. '
+    'When in doubt between "uncertain" and "blocked" for off-topic content: choose "blocked." '
+    'Reason: one sentence naming what the email was about and which intent it failed to match.\n'
+)
+
 
 def _addr(sender_str: str) -> str:
     m = re.search(r'<([^>]+)>', sender_str)
@@ -49,11 +66,8 @@ def evaluate_email_intent(email, email_intent, blocked_senders=None, permitted_s
         f'PERMITTED SENDER RULE: A permitted sender means do not block based on sender identity alone. '
         f'It does NOT mean default to "uncertain" when content fails the intent test. '
         f'Evaluate ALL emails on content — a data viz newsletter, retail promotion, or professional digest is "blocked" even if sent by a household member or trusted address.\n\n'
-        f'Verdict rules — apply in this order:\n'
-        f'1. Content clearly matches intent → "permitted". Reason: one sentence naming the specific intent category.\n'
-        f'2. Content genuinely ambiguous — email mentions a relevant topic but primary purpose is unclear or mixed → "uncertain". Use sparingly; only when you truly cannot tell. Example: a school email that also promotes a fundraiser. Reason: one specific sentence naming the sender, topic, and the exact tension. Good: "City of Decatur email promoting a summer concert series — could relate to family activities but appears to be a general public event." Bad: "Not sure if this matches." "Could be relevant."\n'
-        f'3. Content clearly does not match intent → "blocked". Includes ALL promotional/retail/marketing emails, professional newsletters, and industry digests, even from trusted senders. When in doubt between "uncertain" and "blocked" for off-topic content: choose "blocked." Reason: one sentence naming what the email was about and which intent it failed to match.\n\n'
-        f'Email:\nFrom: {sender}\nSubject: {subject}\nBody: {body}'
+        + _INTENT_VERDICT_RULES +
+        f'\nEmail:\nFrom: {sender}\nSubject: {subject}\nBody: {body}'
     )
 
     try:
@@ -130,11 +144,8 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
             f'PERMITTED SENDER RULE: A permitted sender means do not block based on sender identity alone. '
             f'It does NOT mean default to "uncertain" when content fails the intent test. '
             f'Evaluate ALL emails on content — a data viz newsletter, retail promotion, or professional digest is "blocked" even if sent by a household member or trusted address.\n\n'
-            f'Verdict rules — apply in this order:\n'
-            f'1. Content clearly matches intent → "permitted". Reason: one sentence naming the specific intent category.\n'
-            f'2. Content genuinely ambiguous — email mentions a relevant topic but primary purpose is unclear or mixed → "uncertain". Use sparingly; only when you truly cannot tell. Example: a school email that also promotes a fundraiser. Reason: name the sender, topic, and the exact tension. Good: "City of Decatur email promoting a summer concert series — could relate to family activities but appears to be a general public event." Bad: "Not sure if this matches." "Could be relevant."\n'
-            f'3. Content clearly does not match intent → "blocked". Includes ALL promotional/retail/marketing emails, professional newsletters, and industry digests, even from trusted senders. When in doubt between "uncertain" and "blocked" for off-topic content: choose "blocked." Reason: one sentence naming what the email was about and which intent it failed.\n\n'
-            f'Emails:\n' + '\n'.join(lines)
+            + _INTENT_VERDICT_RULES +
+            f'\nEmails:\n' + '\n'.join(lines)
         )
 
         try:

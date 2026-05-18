@@ -257,6 +257,12 @@ def _log_gemini_decision_sync(action_type, input_context, context_consulted,
 
 
 def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt: str = None, notes_consulted: list = None):
+    # notes_consulted is captured by reference intentionally. The search_memory tool
+    # appends to this same list during the agent session. list(notes_consulted) in the
+    # inner function creates a snapshot at *call time* — after search_memory has run —
+    # not at factory-creation time (when the list is still empty). Do not rebind to a
+    # static copy here; doing so would always log an empty notes_consulted list.
+    _notes_ref = notes_consulted  # explicit rebind for clarity; same object, same semantics
     def add_todo_logged(
         title: str,
         date_expression: str = None,
@@ -319,7 +325,7 @@ def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt:
                 user_email='agent',
                 full_prompt=full_prompt,
                 tool_arguments={'title': title, 'date_expression': date_expression, 'assignee': assignee, 'reasoning': reasoning},
-                notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
+                notes_consulted=list(_notes_ref) if _notes_ref is not None else None,
             )
             if dec_id:
                 agent_state['decision_ids'].append(dec_id)
@@ -328,6 +334,7 @@ def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt:
 
 
 def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt: str = None, notes_consulted: list = None):
+    _notes_ref = notes_consulted  # snapshot semantics: see _make_agent_add_todo comment
     def reassign_task(title: str, new_assignee: str, reasoning: str = None):
         """Reassign an existing task in the Google Doc to a different household member.
 
@@ -350,7 +357,7 @@ def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt:
             user_email='agent',
             full_prompt=full_prompt,
             tool_arguments={'title': title, 'new_assignee': new_assignee, 'reasoning': reasoning},
-            notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
+            notes_consulted=list(_notes_ref) if _notes_ref is not None else None,
         )
         if dec_id:
             agent_state['decision_ids'].append(dec_id)
@@ -359,6 +366,7 @@ def _make_agent_reassign(agent_state: dict, context_available: str, full_prompt:
 
 
 def _make_agent_dismiss_email(agent_state: dict, full_prompt: str = None, notes_consulted: list = None):
+    _notes_ref = notes_consulted  # snapshot semantics: see _make_agent_add_todo comment
     def dismiss_email(email_id: str, reasoning: str = None):
         """Dismiss an email so it won't appear in the inbox.
 
@@ -383,7 +391,7 @@ def _make_agent_dismiss_email(agent_state: dict, full_prompt: str = None, notes_
                 user_email='agent',
                 full_prompt=full_prompt,
                 tool_arguments={'email_id': email_id, 'reasoning': reasoning},
-                notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
+                notes_consulted=list(_notes_ref) if _notes_ref is not None else None,
             )
             if dec_id:
                 agent_state['decision_ids'].append(dec_id)
@@ -455,6 +463,7 @@ def _make_agent_queue_question():
 
 
 def _make_agent_draft_reply(agent_state: dict, user_id: str = None, full_prompt: str = None, notes_consulted: list = None):
+    _notes_ref = notes_consulted  # snapshot semantics: see _make_agent_add_todo comment
     def draft_reply_logged(
         to: str,
         subject: str,
@@ -558,7 +567,7 @@ def _make_agent_draft_reply(agent_state: dict, user_id: str = None, full_prompt:
                 'reasoning': reasoning,
                 'source_email_id': source_email_id,
             },
-            notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
+            notes_consulted=list(_notes_ref) if _notes_ref is not None else None,
         )
         if dec_id:
             agent_state['decision_ids'].append(dec_id)

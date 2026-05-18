@@ -3,7 +3,10 @@ import os
 import urllib.parse
 import urllib.request
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.compose',
+]
 
 
 def main():

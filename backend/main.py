@@ -8,6 +8,7 @@ from google.cloud import firestore
 from mediator import process_message
 from logger import log_action, get_recent_actions, get_action_summary, get_recent_decisions
 import email_store
+import pending_actions
 
 app = Flask(__name__)
 CORS(app)
@@ -20,6 +21,21 @@ def _extract_sender_addr(sender_str: str) -> str:
     """Return the bare email address from a From: header, lowercased."""
     m = re.search(r'<([^>]+)>', sender_str)
     return m.group(1).lower() if m else sender_str.lower()
+
+
+def _parse_date_safe(date_str: str):
+    """Parse an RFC 2822 date string to a timezone-aware datetime for sorting.
+
+    Returns datetime.min (UTC) on any parse failure so malformed dates sort last.
+    """
+    from email.utils import parsedate_to_datetime
+    from datetime import datetime, timezone
+    if not date_str:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        return parsedate_to_datetime(date_str)
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _record_deleted_task(title: str):
@@ -725,6 +741,214 @@ def dedup_tasks():
     return jsonify({'removed': removed})
 
 
+# ── Pending Actions ───────────────────────────────────────────────────────────
+
+@app.route('/pending-actions', methods=['GET'])
+def get_pending_actions():
+    """Return pending actions filtered by status (default: 'pending').
+
+    Query params:
+      status   — 'pending' | 'approved' | 'rejected' | 'expired' (default: 'pending')
+      user_id  — user email namespace (default: dcjohnston1@gmail.com)
+    """
+    status = request.args.get('status', 'pending')
+    user_id = request.args.get('user_id', 'dcjohnston1@gmail.com')
+    results = pending_actions.list_pending_actions(user_id=user_id, status=status)
+    return jsonify({'pending_actions': results})
+
+
+@app.route('/pending-actions/<path:action_id>/resolve', methods=['POST'])
+def resolve_pending_action(action_id):
+    """Approve, reject, or expire a pending action.
+
+    Body fields:
+      resolution  — 'approved' | 'rejected' | 'expired'
+      resolved_by — who resolved it (default: 'user')
+      user_id     — user email namespace (default: dcjohnston1@gmail.com)
+    """
+    data = request.get_json() or {}
+    resolution = data.get('resolution')
+    if not resolution:
+        return jsonify({'error': 'Missing resolution'}), 400
+    if resolution not in ('approved', 'rejected', 'expired'):
+        return jsonify({'error': "resolution must be 'approved', 'rejected', or 'expired'"}), 400
+    resolved_by = data.get('resolved_by', 'user')
+    user_id = data.get('user_id', 'dcjohnston1@gmail.com')
+    success = pending_actions.resolve_pending_action(user_id, action_id, resolution, resolved_by)
+    if not success:
+        return jsonify({'error': 'Action not found'}), 404
+    return jsonify({'status': 'ok'})
+
+
+# ── Cloud Tasks handler ───────────────────────────────────────────────────────
+
+@app.route('/tasks/handle-action', methods=['POST'])
+def handle_action():
+    """Cloud Tasks handler — executes a single pending Hana action.
+
+    Called by Cloud Tasks (not by humans). Secured with OIDC token verification.
+    Idempotent: if the action is already in_progress or complete, returns 200
+    immediately without re-executing.
+
+    Expected JSON body: {"user_id": "...", "action_id": "..."}
+
+    On success: sets processing_status = 'complete', returns 200.
+    On failure: sets processing_status = 'failed', returns 500 (triggers retry).
+    """
+    import traceback as _tb
+
+    # ── OIDC token verification ───────────────────────────────────────────────
+    # Cloud Tasks sends an Authorization: Bearer <OIDC token> header.
+    # We verify it using Google's token verification libraries.
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        print('[handle-action] REJECTED: missing Authorization header')
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    id_token = auth_header.split('Bearer ', 1)[1]
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+        cloud_run_url = os.environ.get(
+            'CLOUD_RUN_URL',
+            'https://saucer-backend-987132498395.us-central1.run.app',
+        )
+        request_adapter = google_requests.Request()
+        # verify_oauth2_token handles OIDC tokens from service accounts
+        # (what Cloud Tasks uses), unlike verify_firebase_token which is
+        # for Firebase user ID tokens.
+        google_id_token.verify_oauth2_token(
+            id_token, request_adapter, audience=cloud_run_url
+        )
+    except Exception as e:
+        print(f'[handle-action] OIDC verification failed: {e}')
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    # ── Parse payload ─────────────────────────────────────────────────────────
+    data = request.get_json(force=True) or {}
+    user_id = data.get('user_id', '').strip()
+    action_id = data.get('action_id', '').strip()
+
+    if not user_id or not action_id:
+        print(f'[handle-action] ERROR: missing user_id or action_id in payload: {data}')
+        return jsonify({'error': 'Missing user_id or action_id'}), 400
+
+    # ── Load action document ──────────────────────────────────────────────────
+    action_doc = pending_actions.get_pending_action(user_id, action_id)
+    if not action_doc:
+        print(f'[handle-action] ERROR: action not found user_id={user_id} action_id={action_id}')
+        # Return 200 so Cloud Tasks does not retry a permanently missing document.
+        return jsonify({'status': 'not_found'}), 200
+
+    # ── Idempotency guard ─────────────────────────────────────────────────────
+    processing_status = action_doc.get('processing_status', 'pending')
+    if processing_status in ('in_progress', 'complete'):
+        print(
+            f'[handle-action] IDEMPOTENT SKIP user_id={user_id} action_id={action_id} '
+            f'processing_status={processing_status}'
+        )
+        return jsonify({'status': 'already_' + processing_status}), 200
+
+    # ── Mark in_progress ──────────────────────────────────────────────────────
+    pending_actions.update_processing_status(user_id, action_id, 'in_progress')
+
+    action_type = action_doc.get('action_type', '')
+    payload = action_doc.get('payload', {})
+
+    print(f'[handle-action] EXECUTING user_id={user_id} action_id={action_id} action_type={action_type}')
+
+    try:
+        # ── Execute action by type ────────────────────────────────────────────
+        if action_type == 'gmail_draft':
+            # The draft was already created synchronously in the agent session.
+            # This handler records the successful execution and marks it complete.
+            # Future action types (task_add, SMS, etc.) will execute here.
+            draft_id = payload.get('draft_id')
+            print(f'[handle-action] gmail_draft acknowledged draft_id={draft_id}')
+            # No additional work needed — draft was created during agent run.
+
+        else:
+            print(f'[handle-action] WARNING: unknown action_type={action_type!r} — marking complete')
+
+        # ── Mark complete ─────────────────────────────────────────────────────
+        pending_actions.update_processing_status(user_id, action_id, 'complete')
+        print(f'[handle-action] COMPLETE user_id={user_id} action_id={action_id}')
+        return jsonify({'status': 'complete'}), 200
+
+    except Exception as e:
+        err_msg = _tb.format_exc()
+        print(f'[handle-action] FAILED user_id={user_id} action_id={action_id}: {err_msg}')
+        try:
+            pending_actions.update_processing_status(user_id, action_id, 'failed')
+        except Exception as status_err:
+            print(f'[handle-action] ERROR updating failed status: {status_err}')
+        # Return 500 so Cloud Tasks retries according to queue retry config.
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/tasks/process-email', methods=['POST'])
+def process_email_task():
+    """Cloud Tasks handler — runs process_single_email for one qualifying email.
+
+    Called by Cloud Tasks after the Pub/Sub webhook enqueues the task.
+    Secured with OIDC token verification (same as handle-action).
+
+    Expected JSON body: {"email_id": "...", "email_address": "..."}
+
+    Returns 200 on success, 500 on failure (triggers Cloud Tasks retry).
+    """
+    import traceback as _tb
+
+    # ── OIDC token verification ───────────────────────────────────────────────
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        print('[process-email] REJECTED: missing Authorization header')
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    id_token = auth_header.split('Bearer ', 1)[1]
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+        cloud_run_url = os.environ.get(
+            'CLOUD_RUN_URL',
+            'https://saucer-backend-987132498395.us-central1.run.app',
+        )
+        request_adapter = google_requests.Request()
+        google_id_token.verify_oauth2_token(
+            id_token, request_adapter, audience=cloud_run_url
+        )
+    except Exception as e:
+        print(f'[process-email] OIDC verification failed: {e}')
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    data = request.get_json(force=True) or {}
+    email_id = data.get('email_id', '').strip()
+    email_address = data.get('email_address', '').strip()
+
+    if not email_id:
+        print(f'[process-email] ERROR: missing email_id in payload: {data}')
+        return jsonify({'error': 'Missing email_id'}), 400
+
+    print(f'[process-email] EXECUTING email_id={email_id} email_address={email_address}')
+
+    try:
+        email = email_store.get_email(email_id)
+        if not email:
+            print(f'[process-email] email not found in store: {email_id}')
+            # Return 200 so Cloud Tasks does not retry a permanently missing email.
+            return jsonify({'status': 'not_found'}), 200
+
+        from agent import process_single_email
+        briefing_id = process_single_email(email)
+        print(f'[process-email] COMPLETE email_id={email_id} briefing_id={briefing_id}')
+        return jsonify({'status': 'complete', 'briefing_id': briefing_id}), 200
+
+    except Exception as e:
+        print(f'[process-email] FAILED email_id={email_id}: {_tb.format_exc()}')
+        # Return 500 so Cloud Tasks retries.
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/email-filters', methods=['GET'])
 def get_email_filters():
     db = get_db()
@@ -997,7 +1221,7 @@ def get_dismissed_review():
                 'review_reason': verdict_info['reason'],
             })
 
-    results.sort(key=lambda x: x.get('date', ''), reverse=True)
+    results.sort(key=lambda x: _parse_date_safe(x.get('date', '')), reverse=True)
     return jsonify({'emails': results[:50]})
 
 
@@ -1728,7 +1952,6 @@ def agent_email_trigger():
     """Pub/Sub push webhook — fires when Gmail delivers a new message notification."""
     import base64 as _base64
     import json as _json
-    import threading
 
     envelope = request.get_json(force=True) or {}
     message = envelope.get('message', {})
@@ -1921,18 +2144,60 @@ def agent_email_trigger():
             print(f"[email-trigger] no filter match, skipping: {subj}")
             continue
 
-        print(f"[email-trigger] qualifying (verdict={email.get('verdict')}) — spawning agent for: {subj}")
+        print(f"[email-trigger] qualifying (verdict={email.get('verdict')}) — enqueuing Cloud Task for: {subj}")
 
-        def _process(e=email):
-            try:
-                from agent import process_single_email
-                process_single_email(e)
-            except Exception as ex:
-                print(f"[email-trigger] process_single_email error: {ex}")
-
-        threading.Thread(target=_process, daemon=False).start()
+        # Replace in-process threading with Cloud Tasks.
+        # The task handler at /tasks/process-email runs process_single_email
+        # inside Cloud Tasks, giving us retries and observability.
+        _enqueue_email_processing_task(email_id=email.get('id', ''), email_address=email_address)
 
     return jsonify({'ok': True})
+
+
+def _enqueue_email_processing_task(email_id: str, email_address: str) -> None:
+    """Enqueue a Cloud Task to process a single qualifying email through the agent.
+
+    Target: POST /tasks/process-email on this Cloud Run service.
+    Uses OIDC authentication — same service account as the handle-action handler.
+    Fires-and-forgets; errors are logged but do not fail the Pub/Sub response.
+    """
+    import json as _json
+    from google.cloud import tasks_v2 as _tasks
+
+    _PROJECT = 'mediationmate'
+    _LOCATION = 'us-central1'
+    _QUEUE = 'hana-actions'
+    _CLOUD_RUN_URL = os.environ.get(
+        'CLOUD_RUN_URL',
+        'https://saucer-backend-987132498395.us-central1.run.app',
+    )
+    _SA_EMAIL = os.environ.get(
+        'CLOUD_TASKS_SERVICE_ACCOUNT',
+        'saucer-doc-service@mediationmate.iam.gserviceaccount.com',
+    )
+    handler_url = _CLOUD_RUN_URL.rstrip('/') + '/tasks/process-email'
+    payload = {'email_id': email_id, 'email_address': email_address}
+
+    task = {
+        'http_request': {
+            'http_method': _tasks.HttpMethod.POST,
+            'url': handler_url,
+            'headers': {'Content-Type': 'application/json'},
+            'body': _json.dumps(payload).encode('utf-8'),
+            'oidc_token': {
+                'service_account_email': _SA_EMAIL,
+                'audience': _CLOUD_RUN_URL,
+            },
+        }
+    }
+
+    try:
+        client = _tasks.CloudTasksClient()
+        queue_path = client.queue_path(_PROJECT, _LOCATION, _QUEUE)
+        response = client.create_task(request={'parent': queue_path, 'task': task})
+        print(f'[email-trigger] enqueued task for email_id={email_id} task_name={response.name}')
+    except Exception as e:
+        print(f'[email-trigger] ERROR enqueuing task for email_id={email_id}: {e}')
 
 
 @app.route('/agent/renew-gmail-watch', methods=['POST'])

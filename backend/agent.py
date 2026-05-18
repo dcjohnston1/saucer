@@ -71,6 +71,14 @@ Apply the same assignment rules as the morning review:
 - Consult CALENDAR for upcoming commitments.
 - Always populate the reasoning field with specifics.
 
+GMAIL DRAFTS:
+- If an email clearly warrants a reply — an RSVP, a scheduling request, a direct question to the household, or an action item requiring a response — call draft_reply to create a Gmail draft.
+- The draft goes to Gmail Drafts for human review. It is NEVER sent automatically.
+- Write the reply in a natural, warm household tone, as Dan or Emily would write it.
+- Do NOT draft replies to newsletters, marketing, automated notifications, receipts, or any email where a reply is not clearly expected.
+- When in doubt, do not draft. One well-chosen draft is better than three unnecessary ones.
+- Always populate the reasoning parameter with why this email warrants a reply.
+
 BRIEFING: Tell each person what's relevant to them. Start with the main point. Sign off warmly."""
 
 AGENT_SYSTEM_PROMPT = """You are Hana running your morning review. No user is present. Your job:
@@ -108,6 +116,15 @@ KNOWLEDGE GAPS:
 PASSIVE LEARNING:
 - If any overnight email reveals household facts worth remembering (a recurring appointment,
   a family member mentioned, a preference stated), call save_note before writing the briefing.
+
+GMAIL DRAFTS:
+- If any overnight email clearly warrants a reply — an RSVP, a scheduling request, a direct
+  question to the household, or an action item requiring a response — call draft_reply to create
+  a Gmail draft for human review. It is NEVER sent automatically.
+- Write in a natural, warm household tone, as Dan or Emily would write it.
+- Do NOT draft replies to newsletters, marketing, automated notifications, or ambiguous emails.
+- When in doubt, do not draft. One well-chosen draft is better than several unnecessary ones.
+- Always populate the reasoning parameter.
 
 When finished reviewing all emails, call write_briefing with both messages.
 If there are no overnight emails, still call write_briefing with a brief "all quiet overnight" message for each user."""
@@ -209,6 +226,11 @@ def _log_gemini_decision_sync(action_type, input_context, context_consulted,
         }
         if user_email:
             doc_data['user_email'] = user_email
+        # notes_consulted invariant:
+        #   [] means no memory search occurred this decision — correct and expected.
+        #   None means the factory was called without a notes_consulted list — should not happen.
+        #   A non-empty list means at least one memory search ran before this action fired.
+        # The field is absent from pre-Sprint-1 records — that is historical, not a bug.
         try:
             if full_prompt:
                 _orig = len(full_prompt)
@@ -221,7 +243,12 @@ def _log_gemini_decision_sync(action_type, input_context, context_consulted,
             if notes_consulted is not None:
                 doc_data['notes_consulted'] = notes_consulted
         except Exception as e:
-            print(f'[agent] _log_gemini_decision_sync optional fields failed: {e}', file=sys.stderr)
+            # Do not silently swallow — log the field name and value type for diagnosis.
+            print(
+                f'[agent] _log_gemini_decision_sync optional fields failed: {e} '
+                f'(notes_consulted type={type(notes_consulted).__name__})',
+                file=sys.stderr,
+            )
         _, ref = db.collection('gemini_decisions').add(doc_data)
         return ref.id
     except Exception as e:
@@ -427,6 +454,128 @@ def _make_agent_queue_question():
     return queue_question_agent
 
 
+def _make_agent_draft_reply(agent_state: dict, user_id: str = None, full_prompt: str = None, notes_consulted: list = None):
+    def draft_reply_logged(
+        to: str,
+        subject: str,
+        body: str,
+        reasoning: str = None,
+        source_email_id: str = None,
+        thread_id: str = None,
+        in_reply_to_message_id: str = None,
+    ):
+        """Draft a reply to an email on behalf of the household.
+
+        Call this when an email clearly warrants a response and you have enough
+        context to draft a useful reply. The draft goes to Gmail Drafts for human
+        review -- it is NOT sent automatically.
+
+        Only draft replies to emails that require a direct response: RSVPs,
+        scheduling requests, questions directed at the household, or action items.
+        Do NOT draft replies to newsletters, marketing, automated notifications,
+        or ambiguous emails. When in doubt, do not draft.
+
+        Args:
+            to: Recipient email address.
+            subject: Subject line (typically 'Re: <original subject>').
+            body: Full reply body. Write in a natural, friendly household tone.
+            reasoning: Why this reply is warranted. Always provide this.
+            source_email_id: ID of the email being replied to.
+            thread_id: Gmail thread ID for threading the draft (if available).
+            in_reply_to_message_id: Gmail message ID for the In-Reply-To header.
+        """
+        from gmail_drafts import create_gmail_draft
+        from pending_actions import enqueue_pending_action
+        from actions import get_action
+        from task_queue import enqueue_action
+
+        result = create_gmail_draft(
+            to=to,
+            subject=subject,
+            body=body,
+            in_reply_to_message_id=in_reply_to_message_id,
+            thread_id=thread_id,
+        )
+
+        # Resolve user_id: use the closure-captured value, fall back to _DAN.
+        _uid = user_id or _DAN
+
+        action_meta = get_action('gmail_draft')
+        # The ActionClass registry does not score individual instances — the agent
+        # decided to call draft_reply, which is itself a high-confidence act.
+        # Use 0.8 as the runtime confidence for gmail_draft actions created by the
+        # agent session. This exceeds the default 0.7 threshold in config/limits.
+        action_confidence = 0.8
+        pending_id = enqueue_pending_action(
+            user_id=_uid,
+            action_type='gmail_draft',
+            payload={
+                'to': to,
+                'subject': subject,
+                'body_preview': body[:200],
+                'draft_id': result.get('draft_id'),
+                'source_email_id': source_email_id,
+            },
+            confidence=action_confidence,
+            email_id=source_email_id,
+        )
+
+        # Enqueue into Cloud Tasks for reliable, retryable execution tracking.
+        # Build a lightweight action object that task_queue.enqueue_action expects.
+        if pending_id:
+            class _ActionRef:
+                pass
+            _action_ref = _ActionRef()
+            _action_ref.action_id = pending_id
+            _action_ref.confidence = action_confidence
+            _action_ref.action_type = 'gmail_draft'
+            enqueue_action(_uid, _action_ref)
+
+        log_action(
+            'agent',
+            'gmail_draft_created',
+            {
+                'to': to,
+                'subject': subject,
+                'draft_id': result.get('draft_id'),
+                'pending_action_id': pending_id,
+                'source_email_id': source_email_id,
+            },
+            actor='gemini',
+            reasoning=reasoning,
+        )
+
+        dec_id = _log_gemini_decision_sync(
+            action_type='gmail_draft_created',
+            input_context='email draft generation',
+            context_consulted='',
+            decision_made=f"Drafted reply to {to}: {subject}",
+            reasoning=reasoning or '',
+            full_prompt=full_prompt,
+            tool_arguments={
+                'to': to,
+                'subject': subject,
+                'reasoning': reasoning,
+                'source_email_id': source_email_id,
+            },
+            notes_consulted=list(notes_consulted) if notes_consulted is not None else None,
+        )
+        if dec_id:
+            agent_state['decision_ids'].append(dec_id)
+
+        print(
+            f"[agent] gmail_draft_created to={to} subject={subject!r} "
+            f"draft_id={result.get('draft_id')} status={result.get('status')}",
+            file=sys.stderr,
+        )
+        return {
+            'status': result.get('status'),
+            'draft_id': result.get('draft_id'),
+            'pending_action_id': pending_id,
+        }
+    return draft_reply_logged
+
+
 def _make_write_briefing(db, agent_state: dict, overnight_emails: list):
     def write_briefing(dan_message: str, emily_message: str):
         """Write and store the morning briefing. Call this when you have finished reviewing all emails.
@@ -512,6 +661,7 @@ def process_single_email(email: dict) -> str:
     reassign_tool = _make_agent_reassign(agent_state, context_available, full_system, notes_consulted)
     dismiss_tool = _make_agent_dismiss_email(agent_state, full_system, notes_consulted)
     search_memory_tool = _make_agent_search_memory(notes_consulted)
+    draft_reply_tool = _make_agent_draft_reply(agent_state, user_id=_DAN, full_prompt=full_system, notes_consulted=notes_consulted)
     write_briefing_tool = _make_write_briefing(db, agent_state, [email])
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()
@@ -519,8 +669,8 @@ def process_single_email(email: dict) -> str:
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
-        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool,
-               save_note_tool, search_memory_tool, queue_question_tool],
+        tools=[add_todo_tool, reassign_tool, dismiss_tool, draft_reply_tool,
+               write_briefing_tool, save_note_tool, search_memory_tool, queue_question_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)
@@ -614,6 +764,7 @@ def run_morning_agent() -> str:
     reassign_tool = _make_agent_reassign(agent_state, context_available, full_system, notes_consulted)
     dismiss_tool = _make_agent_dismiss_email(agent_state, full_system, notes_consulted)
     search_memory_tool = _make_agent_search_memory(notes_consulted)
+    draft_reply_tool = _make_agent_draft_reply(agent_state, user_id=_DAN, full_prompt=full_system, notes_consulted=notes_consulted)
     write_briefing_tool = _make_write_briefing(db, agent_state, overnight_emails)
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()
@@ -621,8 +772,8 @@ def run_morning_agent() -> str:
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
-        tools=[add_todo_tool, reassign_tool, dismiss_tool, write_briefing_tool,
-               save_note_tool, search_memory_tool, queue_question_tool],
+        tools=[add_todo_tool, reassign_tool, dismiss_tool, draft_reply_tool,
+               write_briefing_tool, save_note_tool, search_memory_tool, queue_question_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)

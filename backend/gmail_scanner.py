@@ -6,7 +6,10 @@ import base64
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.compose',
+]
 
 
 def _normalize_sender(sender_str: str) -> str:

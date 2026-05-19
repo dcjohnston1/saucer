@@ -2116,12 +2116,13 @@ function initHanaVoice() {
   btn.appendChild(timerEl);
 
   function _setState(state) {
-    btn.classList.remove('hana-voice-recording', 'hana-voice-processing', 'hana-voice-speaking');
+    btn.classList.remove('hana-voice-recording', 'hana-voice-processing', 'hana-voice-speaking', 'hana-voice-error');
     if (state) btn.classList.add(`hana-voice-${state}`);
     btn.setAttribute('aria-label',
       state === 'recording'  ? 'Recording — release to send' :
       state === 'processing' ? 'Hana is thinking…' :
       state === 'speaking'   ? 'Hana is speaking — tap to stop' :
+      state === 'error'      ? "Didn't catch that — try again" :
                                'Hold to speak to Hana'
     );
   }
@@ -2138,6 +2139,41 @@ function initHanaVoice() {
     clearInterval(timerInterval);
     timerInterval = null;
     timerEl.textContent = '';
+  }
+
+  // Earcon — soft rising tone played during processing to fill the latency gap
+  let _earconCtx = null;
+  let _earconOsc = null;
+  let _earconGain = null;
+
+  function _playEarcon() {
+    try {
+      if (!window.AudioContext && !window.webkitAudioContext) return; // not supported
+      _stopEarcon(); // ensure clean state
+      _earconCtx = new (window.AudioContext || window.webkitAudioContext)();
+      _earconGain = _earconCtx.createGain();
+      _earconGain.gain.setValueAtTime(0.06, _earconCtx.currentTime);
+      _earconGain.connect(_earconCtx.destination);
+
+      _earconOsc = _earconCtx.createOscillator();
+      _earconOsc.type = 'sine';
+      _earconOsc.frequency.setValueAtTime(440, _earconCtx.currentTime);         // start A4
+      _earconOsc.frequency.linearRampToValueAtTime(880, _earconCtx.currentTime + 0.2); // ramp to A5
+      _earconOsc.connect(_earconGain);
+      _earconOsc.start();
+    } catch (e) {
+      // fail silently — earcon is a UX enhancement, never a hard dependency
+    }
+  }
+
+  function _stopEarcon() {
+    try {
+      if (_earconOsc) { _earconOsc.stop(); _earconOsc.disconnect(); _earconOsc = null; }
+      if (_earconGain) { _earconGain.disconnect(); _earconGain = null; }
+      if (_earconCtx) { _earconCtx.close(); _earconCtx = null; }
+    } catch (e) {
+      // fail silently
+    }
   }
 
   async function _startRecording() {
@@ -2203,6 +2239,7 @@ function initHanaVoice() {
 
   async function _sendToHana(audioBlob) {
     _setState('processing');
+    _playEarcon();
 
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.webm');
@@ -2221,6 +2258,7 @@ function initHanaVoice() {
         const mp3Blob = await res.blob();
         const audioUrl = URL.createObjectURL(mp3Blob);
         currentAudio = new Audio(audioUrl);
+        _stopEarcon();
         _setState('speaking');
 
         currentAudio.onended = () => {
@@ -2246,14 +2284,18 @@ function initHanaVoice() {
       } else {
         // API returned an error JSON
         const data = await res.json().catch(() => ({}));
-        _setState(null);
-        const msg = (data.error === 'low_confidence' || data.error === 'no_transcript')
-          ? (data.message || "Didn't catch that — please try again.")
-          : (data.message || 'Something went wrong. Please try again.');
-        showToast(msg);
+        _stopEarcon();
+        if (data.error === 'low_confidence' || data.error === 'no_transcript') {
+          _setState('error');
+          setTimeout(() => _setState(null), 2000);
+        } else {
+          _setState(null);
+          showToast(data.message || 'Something went wrong. Please try again.');
+        }
       }
     } catch (err) {
       console.error('[hana-voice] fetch error:', err);
+      _stopEarcon();
       _setState(null);
       showToast('Voice request failed. Please check your connection.');
     }

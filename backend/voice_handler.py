@@ -20,6 +20,9 @@ from google.cloud import texttospeech
 _STT_CLIENT = None
 _TTS_CLIENT = None
 
+# TTS voice name — change here to tune Hana's voice without editing synthesize_speech()
+HANA_VOICE_NAME = "en-US-Neural2-F"
+
 
 def _get_stt_client():
     global _STT_CLIENT
@@ -93,7 +96,7 @@ def synthesize_speech(text: str) -> bytes:
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
         language_code="en-US",
-        name="en-US-Neural2-F",  # Warm, clear female Neural2 voice
+        name=HANA_VOICE_NAME,
         ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,
     )
     audio_config = texttospeech.AudioConfig(

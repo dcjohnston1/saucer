@@ -588,6 +588,12 @@ header h1 {
   animation: hana-voice-pulse 1.2s ease-in-out infinite;
 }
 
+#hana-voice-btn.hana-voice-error {
+  background: #c0392b;
+  color: #fff;
+  animation: none;
+}
+
 @keyframes hana-voice-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.75; transform: scale(0.95); }

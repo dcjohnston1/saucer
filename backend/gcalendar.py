@@ -192,3 +192,24 @@ def delete_event(event_id):
     """Delete a calendar event."""
     service = get_service()
     service.events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
+
+
+def check_event_exists(title, date_expression):
+    """Return True if a calendar event with the same title (case-insensitive)
+    already exists within a 1-day window of the parsed date.
+
+    Prevents duplicate events when an email is reprocessed or the agent runs
+    multiple times. Fails open (returns False) if the date cannot be parsed or
+    if the Calendar API call fails — in those cases, let create_event proceed.
+    """
+    start_dt, _ = _parse_date_range(date_expression)
+    if not start_dt:
+        return False
+    window_start = (start_dt - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')
+    window_end = (start_dt + timedelta(days=2)).strftime('%Y-%m-%dT00:00:00Z')
+    try:
+        events = get_events(window_start, window_end)
+        title_lower = title.lower()
+        return any(e['title'].lower() == title_lower for e in events)
+    except Exception:
+        return False  # fail open — let create_event proceed if check fails

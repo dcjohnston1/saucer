@@ -381,12 +381,26 @@ def get_cached_emails():
 
     blocked_set = _get_blocked_senders_set(db)
 
+    # Apply the same sender allowlist used by the live /emails route.
+    # Without this, cached emails bypass the allowlist and unrelated senders appear.
+    allow_doc = db.collection('settings').document('email_filters').get()
+    allow_filters = allow_doc.to_dict().get('addresses', []) if allow_doc.exists else []
+    effective_allow = (allow_filters + ['me']) if allow_filters else None
+
     visible = email_store.list_emails(
         exclude_dismissed=True,
         exclude_reviewed=True,
         exclude_blocked_verdict=True,
         include_body=True,
     )
+
+    if effective_allow:
+        allowed_set = set(f.lower() for f in effective_allow)
+        def _sender_allowed(e):
+            addr = _extract_sender_addr(e.get('sender', '')).lower()
+            full = e.get('sender', '').lower()
+            return any(a in addr or a in full for a in allowed_set)
+        visible = [e for e in visible if _sender_allowed(e)]
 
     if exclude_keywords:
         def _matches_exclude_cached(e):

@@ -3132,3 +3132,18 @@ body { overflow-y: auto; height: auto; }
   background: #e74c3c;
   justify-content: flex-end;
 }
+
+/* Email card highlight quote block — shows first source_span from scan-todos (Item 3) */
+.email-card-highlight-quote {
+  font-size: 0.78rem;
+  color: #6b5a00;
+  background: #fffbe6;
+  border-left: 3px solid #f5c518;
+  padding: 4px 8px;
+  margin-top: 4px;
+  border-radius: 0 4px 4px 0;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

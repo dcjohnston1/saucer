@@ -88,6 +88,14 @@ PASSIVE LEARNING:
   Example: "Dan and Emily use Whole Foods, not Trader Joe's, for most grocery shopping."
   This helps the merge detect and remove the contradiction.
 
+CALENDAR:
+- If this email contains a clear household event with a specific date, call add_calendar_event.
+- Only add events that require a person to physically be somewhere or take a specific action on a date.
+  Examples of YES: child's soccer game Saturday 10am, dentist appointment June 14, school concert Friday evening.
+  Examples of NO: "Sale ends Sunday", shipping confirmation, newsletter announcing an upcoming product.
+- Do NOT add an event if you are not confident about the date or the nature of the commitment.
+- When in doubt, do not add. One missed event is better than one wrong calendar entry.
+
 BRIEFING ATTRIBUTION RULE:
 - Only claim a specific task assignment or commitment in your briefing if you called add_todo or
   reassign_task for it earlier in this same session.
@@ -613,6 +621,73 @@ def _make_agent_draft_reply(agent_state: dict, user_id: str = None, full_prompt:
     return draft_reply_logged
 
 
+def _make_agent_add_calendar_event():
+    def add_calendar_event(
+        title: str,
+        date_expression: str,
+        notes: str = None,
+        source_email_id: str = None,
+    ):
+        """Add an event to the household calendar.
+
+        Only call this when the email contains ALL of the following:
+        (1) A clear date or date range (specific day, not just "soon" or "this week").
+        (2) A clear household activity or commitment — appointment, game, school event,
+            meeting, reservation, or deadline requiring attendance or specific action.
+        (3) A human action is required: attending, preparing, responding, or scheduling.
+
+        Do NOT call this for:
+        - Marketing emails, sale deadlines ("Sale ends Sunday"), shipping notifications
+        - Newsletters or announcements where no person needs to be somewhere or do something
+        - Vague or relative dates with no specific calendar anchor
+        - Emails where you are not confident about the date or the commitment
+
+        When in doubt, do not add the event.
+        One missed event is far better than one incorrect calendar entry.
+
+        Args:
+            title: Short, clear event title (e.g. "Julia soccer game", "Dentist - Dan").
+            date_expression: Date string as found in the email (e.g. "June 14", "Saturday June 14 at 10am").
+                             Natural language is fine — the system parses it automatically.
+            notes: Optional additional context (e.g. location, who is attending).
+            source_email_id: ID of the email that triggered this event. Always provide this.
+        """
+        from gcalendar import create_event, check_event_exists
+        from logger import log_action as _log
+
+        # Duplicate guard: do not create if an event with the same title exists on the same date.
+        if check_event_exists(title, date_expression):
+            print(f"[agent] add_calendar_event skipped (duplicate): title={title!r} date={date_expression!r}", file=sys.stderr)
+            return {'ok': True, 'skipped': True, 'reason': 'duplicate'}
+
+        try:
+            event_id = create_event(
+                title=title,
+                date_expression=date_expression,
+                notes=notes,
+                source_email_id=source_email_id,
+            )
+            _log(
+                'agent',
+                'calendar_event_added',
+                {
+                    'title': title,
+                    'date': date_expression,
+                    'event_id': event_id,
+                    'source_email_id': source_email_id,
+                    'source': 'hana_email_agent',
+                },
+                actor='hana',
+            )
+            print(f"[agent] calendar_event_added title={title!r} date={date_expression!r} event_id={event_id}", file=sys.stderr)
+            return {'ok': True, 'event_id': event_id}
+        except Exception as e:
+            print(f"[agent] add_calendar_event error: {e}", file=sys.stderr)
+            return {'ok': False, 'error': str(e)}
+
+    return add_calendar_event
+
+
 def _make_write_briefing(db, agent_state: dict, overnight_emails: list):
     def write_briefing(dan_message: str, emily_message: str, briefing_assertions: list = None):
         """Write and store the morning briefing. Call this when you have finished reviewing all emails.
@@ -715,12 +790,14 @@ def process_single_email(email: dict) -> str:
     write_briefing_tool = _make_write_briefing(db, agent_state, [email])
     save_note_tool = _make_agent_save_note()
     queue_question_tool = _make_agent_queue_question()
+    add_calendar_event_tool = _make_agent_add_calendar_event()
 
     model = genai.GenerativeModel(
         model_name='gemini-2.5-flash',
         system_instruction=full_system,
         tools=[add_todo_tool, reassign_tool, dismiss_tool, draft_reply_tool,
-               write_briefing_tool, save_note_tool, search_memory_tool, queue_question_tool],
+               write_briefing_tool, save_note_tool, search_memory_tool, queue_question_tool,
+               add_calendar_event_tool],
     )
 
     chat = model.start_chat(enable_automatic_function_calling=True)

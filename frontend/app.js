@@ -306,6 +306,10 @@ window.addEventListener('DOMContentLoaded', () => {
     closeDrawer();
     openCalendarScreen(1);
   });
+  document.getElementById('menu-future-events').addEventListener('click', () => {
+    closeDrawer();
+    openFutureEventsScreen();
+  });
   document.getElementById('calendar-back-btn').addEventListener('click', closeCalendarScreen);
   document.getElementById('cal-add-btn').addEventListener('click', openAddEventModal);
 
@@ -649,6 +653,11 @@ function _renderEmailsWithGroups(container, emails) {
   const tasksSection = document.getElementById('suggested-tasks-section');
   if (tasksSection && emails.length > 0) {
     tasksSection.classList.remove('hidden');
+    // Auto-trigger scan on first load (content is empty). Avoids re-scanning on every refresh.
+    const tasksContent = document.getElementById('suggested-tasks-content');
+    if (tasksContent && tasksContent.children.length === 0) {
+      runScanTodos();
+    }
   }
 }
 
@@ -917,6 +926,12 @@ function buildEmailCard(email, isNew = false) {
   const rawReason = email.verdict_reason || '';
   const truncatedReason = rawReason.length > 120 ? rawReason.slice(0, 120) + '…' : rawReason;
   const uncertainBadge = isUncertain ? `<span class="uncertain-badge">Hana wasn't sure: ${escapeHtml(truncatedReason || 'reason not recorded')}</span>` : '';
+  // Show the first source span as a highlighted quote block on the card (Item 3).
+  // source_spans are written by scan-todos and stored on the Firestore email doc.
+  const firstSpan = (email.source_spans && email.source_spans.length > 0) ? email.source_spans[0] : null;
+  const spanQuote = firstSpan
+    ? `<div class="email-card-highlight-quote">"${escapeHtml(firstSpan)}"</div>`
+    : '';
   card.innerHTML = `
     <div class="email-meta">
       <span class="email-sender">${escapeHtml(email.sender)}</span>
@@ -926,6 +941,7 @@ function buildEmailCard(email, isNew = false) {
     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
     ${uncertainBadge}
     <div class="${previewClass}">${escapeHtml(previewText)}${(!summary && bodyText.length > 220) ? '…' : ''}</div>
+    ${spanQuote}
     ${hasMore ? '<button class="email-expand-btn">Show more ▾</button>' : ''}
   `;
 
@@ -2872,6 +2888,20 @@ async function openCalendarScreen(weekOffset) {
   _attachCalendarSwipe(content);
 }
 
+// Opens a calendar view showing events from 14 days out to 180 days out.
+// Gives the user assurance that Hana is tracking events that are beyond the weekly view.
+async function openFutureEventsScreen() {
+  const now = new Date();
+  const start = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);   // +14 days
+  const end   = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000);  // +180 days
+  document.getElementById('calendar-screen-title').textContent = 'Future Events';
+  const content = document.getElementById('calendar-content');
+  content.innerHTML = '<p class="empty-state">Loading…</p>';
+  document.getElementById('calendar-screen').classList.remove('hidden');
+  await _loadCalendarContent(content, start, end);
+  _attachCalendarSwipe(content);
+}
+
 async function _loadCalendarContent(content, start, end) {
   const startISO = start.toISOString();
   const endISO = end.toISOString();
@@ -2907,12 +2937,25 @@ async function _loadCalendarContent(content, start, end) {
       content.appendChild(header);
       byDay[dateKey].forEach(e => content.appendChild(_buildCalendarEventRow(e)));
     });
+
+    // Notify the user about events Hana added from emails (silent background trigger).
+    // Only show the toast once per session per event to avoid repetitive notifications.
+    const newHanaEvents = events.filter(e => e.source_email_id && !_hanaCalendarNotified.has(e.id));
+    if (newHanaEvents.length > 0) {
+      newHanaEvents.forEach(e => _hanaCalendarNotified.add(e.id));
+      const label = newHanaEvents.length === 1
+        ? `Hana added "${newHanaEvents[0].title}" from your emails`
+        : `Hana added ${newHanaEvents.length} events from your emails`;
+      showToast(label, 4000);
+    }
   } catch (err) {
     content.innerHTML = `<p class="empty-state">Could not load calendar: ${err.message}</p>`;
   }
 }
 
 let _calSwipeController = null;
+// Tracks event IDs for which the user has already seen a "Hana added this" toast this session.
+const _hanaCalendarNotified = new Set();
 
 function _attachCalendarSwipe(content) {
   if (_calSwipeController) _calSwipeController.abort();
@@ -3497,7 +3540,7 @@ function addSwipeToTodoProposal(wrapper, card, todo) {
     if (!axisLocked) {
       if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
       axisLocked = true;
-      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy) * 1.5; // 1.5x threshold prevents diagonal from triggering swipe-to-accept
     }
     if (!axisIsHorizontal) return;
     e.preventDefault();

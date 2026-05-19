@@ -16,6 +16,7 @@ from routes.memory import memory_bp
 from routes.files import files_bp
 from routes.admin import admin_bp
 from routes.calendar import calendar_bp
+from routes.voice import voice_bp
 app.register_blueprint(agent_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(emails_bp)
@@ -24,6 +25,7 @@ app.register_blueprint(memory_bp)
 app.register_blueprint(files_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(calendar_bp)
+app.register_blueprint(voice_bp)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

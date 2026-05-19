@@ -549,6 +549,67 @@ header h1 {
   100% { box-shadow: 0 0 0 0 rgba(78,160,120,0); }
 }
 
+/* Hana voice button — hold to speak (Google Cloud STT/TTS) */
+#hana-voice-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#hana-voice-btn:hover { background: #e0e0e0; }
+
+#hana-voice-btn.hana-voice-recording {
+  background: #3a9e72;
+  color: #fff;
+  animation: hana-voice-pulse 0.9s ease-in-out infinite;
+}
+
+#hana-voice-btn.hana-voice-processing {
+  background: #5b6af0;
+  color: #fff;
+  cursor: wait;
+}
+
+#hana-voice-btn.hana-voice-speaking {
+  background: #e69c1a;
+  color: #fff;
+  animation: hana-voice-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes hana-voice-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.75; transform: scale(0.95); }
+}
+
+/* Recording time indicator */
+#hana-voice-timer {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  display: none;
+}
+
+#hana-voice-btn.hana-voice-recording #hana-voice-timer { display: block; }
 
 .tap-to-hear-btn {
   display: inline-block;

@@ -441,6 +441,7 @@ function showMainApp(user) {
   loadKeywordFilters();
   loadExcludeKeywordFilters();
   initVoice();
+  initHanaVoice();
   initPullToRefresh();
   checkMorningBriefing();
   startQuestionPolling();
@@ -2095,6 +2096,204 @@ function initVoice() {
   });
 }
 
+// ── Hana Voice (Google Cloud STT/TTS — hold to speak) ────────────────────────
+
+function initHanaVoice() {
+  const btn = document.getElementById('hana-voice-btn');
+  if (!btn) return;
+
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let recordingTimer = null;
+  let timerInterval = null;
+  let recordingStartMs = 0;
+  let currentAudio = null;  // currently playing Audio element
+
+  // Inject timer label inside the button
+  const timerEl = document.createElement('span');
+  timerEl.id = 'hana-voice-timer';
+  btn.style.position = 'relative';
+  btn.appendChild(timerEl);
+
+  function _setState(state) {
+    btn.classList.remove('hana-voice-recording', 'hana-voice-processing', 'hana-voice-speaking');
+    if (state) btn.classList.add(`hana-voice-${state}`);
+    btn.setAttribute('aria-label',
+      state === 'recording'  ? 'Recording — release to send' :
+      state === 'processing' ? 'Hana is thinking…' :
+      state === 'speaking'   ? 'Hana is speaking — tap to stop' :
+                               'Hold to speak to Hana'
+    );
+  }
+
+  function _startTimer() {
+    recordingStartMs = Date.now();
+    timerInterval = setInterval(() => {
+      const secs = Math.floor((Date.now() - recordingStartMs) / 1000);
+      timerEl.textContent = `${secs}s`;
+    }, 500);
+  }
+
+  function _stopTimer() {
+    clearInterval(timerInterval);
+    timerInterval = null;
+    timerEl.textContent = '';
+  }
+
+  async function _startRecording() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') return;
+
+    // Stop any playing audio response first
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+      _setState(null);
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Use WebM/Opus — accepted natively by Google Cloud STT WEBM_OPUS encoding
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.start(100); // collect data every 100ms for smoother chunks
+      _setState('recording');
+      _startTimer();
+    } catch (err) {
+      console.error('[hana-voice] getUserMedia failed:', err);
+      showToast('Microphone access denied. Please allow microphone in browser settings.');
+    }
+  }
+
+  async function _stopRecordingAndSend() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+      _setState(null);
+      _stopTimer();
+      return;
+    }
+
+    _stopTimer();
+
+    const duration = Date.now() - recordingStartMs;
+    if (duration < 500) {
+      // Too short — likely an accidental tap
+      mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(t => t.stop());
+      mediaRecorder = null;
+      audioChunks = [];
+      _setState(null);
+      return;
+    }
+
+    return new Promise(resolve => {
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        mediaRecorder.stream.getTracks().forEach(t => t.stop());
+        mediaRecorder = null;
+        audioChunks = [];
+        await _sendToHana(audioBlob);
+        resolve();
+      };
+      mediaRecorder.stop();
+    });
+  }
+
+  async function _sendToHana(audioBlob) {
+    _setState('processing');
+
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'recording.webm');
+    formData.append('user', currentUser ? currentUser.email : '');
+    formData.append('user_email', currentUser ? currentUser.email : '');
+    formData.append('conversation_id', conversationId);
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/voice/run`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (res.ok && res.headers.get('Content-Type')?.startsWith('audio/')) {
+        // Success — play the MP3 response
+        const mp3Blob = await res.blob();
+        const audioUrl = URL.createObjectURL(mp3Blob);
+        currentAudio = new Audio(audioUrl);
+        _setState('speaking');
+
+        currentAudio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          currentAudio = null;
+          _setState(null);
+        };
+        currentAudio.onerror = () => {
+          URL.revokeObjectURL(audioUrl);
+          currentAudio = null;
+          _setState(null);
+          showToast("Couldn't play Hana's response.");
+        };
+
+        currentAudio.play().catch(() => {
+          // Autoplay blocked — show tap-to-hear button
+          _setState(null);
+          showToast('Tap to hear Hana\'s response.');
+          btn.addEventListener('click', () => {
+            if (currentAudio) { currentAudio.play(); _setState('speaking'); }
+          }, { once: true });
+        });
+      } else {
+        // API returned an error JSON
+        const data = await res.json().catch(() => ({}));
+        _setState(null);
+        const msg = (data.error === 'low_confidence' || data.error === 'no_transcript')
+          ? (data.message || "Didn't catch that — please try again.")
+          : (data.message || 'Something went wrong. Please try again.');
+        showToast(msg);
+      }
+    } catch (err) {
+      console.error('[hana-voice] fetch error:', err);
+      _setState(null);
+      showToast('Voice request failed. Please check your connection.');
+    }
+  }
+
+  // Hold-to-record: pointerdown starts, pointerup/pointerleave stops
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    btn.setPointerCapture(e.pointerId);
+    // If speaking, stop playback instead of starting a new recording
+    if (currentAudio && btn.classList.contains('hana-voice-speaking')) {
+      currentAudio.pause();
+      currentAudio = null;
+      _setState(null);
+      return;
+    }
+    if (!btn.classList.contains('hana-voice-processing')) {
+      _startRecording();
+    }
+  });
+
+  btn.addEventListener('pointerup', (e) => {
+    e.preventDefault();
+    _stopRecordingAndSend();
+  });
+
+  btn.addEventListener('pointercancel', (e) => {
+    e.preventDefault();
+    // Cancel cleanly without sending
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(t => t.stop());
+      mediaRecorder = null;
+      audioChunks = [];
+    }
+    _stopTimer();
+    _setState(null);
+  });
+}
+
 function _unlockSpeechSynthesis() {
   if (window.speechSynthesis) {
     const unlock = new SpeechSynthesisUtterance('');
@@ -3261,6 +3460,14 @@ function addSwipeToTodoProposal(wrapper, card, todo) {
       }
     }
     deltaX = 0;
+  });
+
+  // Tap (no swipe) on a todo proposal card → open source email excerpt with highlights
+  card.addEventListener('click', () => {
+    if (didSwipe) return;
+    if (todo.email_id) {
+      _openEmailFromId(todo.email_id);
+    }
   });
 }
 

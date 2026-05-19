@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "firestore": {
+      "command": "python3",
+      "args": ["/home/dcjohnston1/saucer/mcp/firestore-mcp/server.py"],
+      "env": {}
+    },
+    "bigquery": {
+      "command": "python3",
+      "args": ["/home/dcjohnston1/saucer/mcp/bigquery-mcp/server.py"],
+      "env": {}
+    }
+  }
+}

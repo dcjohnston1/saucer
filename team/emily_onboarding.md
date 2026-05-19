@@ -17,7 +17,7 @@ or dismiss with a swipe.
 
 ## Getting Set Up
 
-1. Open the app: [CEO fills in URL before sending this]
+1. Open the app: https://saucer-frontend-6ksi6iut7a-uc.a.run.app
 2. Sign in with your Google account (emily.osteen.johnston@gmail.com)
 3. When prompted, grant Hana permission to read your Gmail
    — she reads email but never sends anything without showing you a draft first

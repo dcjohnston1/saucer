@@ -2028,7 +2028,7 @@ function initVoice() {
 
   if (!SpeechRecognition) return;
 
-  micBtn.classList.remove('hidden');
+  if (!document.getElementById('hana-voice-btn')) micBtn.classList.remove('hidden');
   _applyVoiceModeBtnState();
 
   recognition = new SpeechRecognition();
@@ -2054,14 +2054,14 @@ function initVoice() {
 
   recognition.onerror = () => {
     clearTimeout(_voiceSilenceTimer);
-    micBtn.classList.remove('mic-btn--recording');
+    if (micBtn) micBtn.classList.remove('mic-btn--recording');
     recognitionFired = false;
     _voiceTranscript = '';
   };
 
   recognition.onend = () => {
     clearTimeout(_voiceSilenceTimer);
-    micBtn.classList.remove('mic-btn--recording');
+    if (micBtn) micBtn.classList.remove('mic-btn--recording');
     if (recognitionFired && _voiceTranscript.trim()) {
       document.getElementById('msg-input').value = _voiceTranscript.trim();
       _voiceTranscript = '';
@@ -2070,6 +2070,13 @@ function initVoice() {
     } else {
       _voiceTranscript = '';
       recognitionFired = false;
+      // If voice mode is still active and Hana isn't speaking, restart listening
+      if (voiceModeActive && !window.speechSynthesis.speaking) {
+        setTimeout(() => {
+          if (!voiceModeActive) return;
+          try { if (micBtn) micBtn.classList.add('mic-btn--recording'); recognition.start(); } catch (e) {}
+        }, 300);
+      }
     }
   };
 
@@ -2108,6 +2115,7 @@ function initHanaVoice() {
   let timerInterval = null;
   let recordingStartMs = 0;
   let currentAudio = null;  // currently playing Audio element
+  let _voiceStream = null;  // persistent mic stream — avoids repeated permission prompts
 
   // Inject timer label inside the button
   const timerEl = document.createElement('span');
@@ -2176,6 +2184,12 @@ function initHanaVoice() {
     }
   }
 
+  async function _ensureVoiceStream() {
+    if (_voiceStream && _voiceStream.active) return _voiceStream;
+    _voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return _voiceStream;
+  }
+
   async function _startRecording() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') return;
 
@@ -2187,7 +2201,7 @@ function initHanaVoice() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await _ensureVoiceStream();
       // Use WebM/Opus — accepted natively by Google Cloud STT WEBM_OPUS encoding
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
@@ -2217,7 +2231,6 @@ function initHanaVoice() {
     if (duration < 500) {
       // Too short — likely an accidental tap
       mediaRecorder.stop();
-      mediaRecorder.stream.getTracks().forEach(t => t.stop());
       mediaRecorder = null;
       audioChunks = [];
       _setState(null);
@@ -2227,7 +2240,6 @@ function initHanaVoice() {
     return new Promise(resolve => {
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-        mediaRecorder.stream.getTracks().forEach(t => t.stop());
         mediaRecorder = null;
         audioChunks = [];
         await _sendToHana(audioBlob);
@@ -2371,11 +2383,27 @@ function speakReply(text, bubbleEl) {
   _doSpeak(text, bubbleEl);
 }
 
+// Plays a silent 50ms AudioContext buffer, then calls cb. On iOS this forces the
+// audio session to reroute to the current output device (Bluetooth headphones)
+// before speechSynthesis.speak() fires, fixing the first-utterance speaker bug.
+function _primeAudioRoute(cb) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) { cb(); return; }
+    const ctx = new Ctx();
+    const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * 0.05), ctx.sampleRate);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.onended = () => { try { ctx.close(); } catch (e) {} cb(); };
+    src.start();
+  } catch (e) { cb(); }
+}
+
 function _doSpeak(text, bubbleEl) {
   window.speechSynthesis.cancel();
   const micBtn = document.getElementById('mic-btn');
 
-  // iOS PWA sometimes silently blocks synthesis — detect and fall back to tap-to-hear
   const isIOS = /iP(hone|od|ad)/.test(navigator.userAgent);
   let speechStarted = false;
 
@@ -2385,26 +2413,13 @@ function _doSpeak(text, bubbleEl) {
   utt.pitch = 1.0;
   utt.volume = 1.0;
 
-  const voices = window.speechSynthesis.getVoices();
-  if (voices.length > 0) {
-    _setPreferredVoice(utt, voices);
-    window.speechSynthesis.speak(utt);
-  } else {
-    // Async voice load (Chrome, some iOS)
-    window.speechSynthesis.onvoiceschanged = () => {
-      window.speechSynthesis.onvoiceschanged = null;
-      _setPreferredVoice(utt, window.speechSynthesis.getVoices());
-      window.speechSynthesis.speak(utt);
-    };
-    // iOS sometimes never fires onvoiceschanged — retry after 100ms
-    setTimeout(() => {
-      const v = window.speechSynthesis.getVoices();
-      if (v.length > 0 && !utt.voice) {
-        _setPreferredVoice(utt, v);
-        window.speechSynthesis.speak(utt);
-      }
-    }, 100);
-  }
+  // Safety net for the iOS bug where utt.onend stops firing after several turns
+  const safetyMs = Math.max(4000, text.length * 75) + 2000;
+  const safetyTimer = setTimeout(() => {
+    if (voiceModeActive && recognition) {
+      try { recognitionFired = false; _voiceTranscript = ''; recognition.start(); } catch (e) {}
+    }
+  }, safetyMs);
 
   utt.onstart = () => {
     speechStarted = true;
@@ -2412,13 +2427,13 @@ function _doSpeak(text, bubbleEl) {
   };
 
   utt.onend = () => {
+    clearTimeout(safetyTimer);
     speechStarted = true;
     if (micBtn) {
       micBtn.classList.remove('hana-speaking');
       micBtn.classList.add('ready-pulse');
       setTimeout(() => micBtn.classList.remove('ready-pulse'), 1500);
     }
-    // Auto-restart mic in continuous voice mode
     if (voiceModeActive && recognition) {
       setTimeout(() => {
         if (!voiceModeActive) return;
@@ -2427,19 +2442,44 @@ function _doSpeak(text, bubbleEl) {
           _voiceTranscript = '';
           if (micBtn) micBtn.classList.add('mic-btn--recording');
           recognition.start();
-        } catch (e) { /* already running */ }
+        } catch (e) {}
       }, 400);
     }
   };
 
-  // iOS PWA fallback: if synthesis never starts within 600ms, show tap-to-hear
+  function _speak() {
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      _setPreferredVoice(utt, voices);
+      window.speechSynthesis.speak(utt);
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        _setPreferredVoice(utt, window.speechSynthesis.getVoices());
+        window.speechSynthesis.speak(utt);
+      };
+      setTimeout(() => {
+        const v = window.speechSynthesis.getVoices();
+        if (v.length > 0 && !utt.voice) {
+          _setPreferredVoice(utt, v);
+          window.speechSynthesis.speak(utt);
+        }
+      }, 100);
+    }
+  }
+
+  // Prime audio route before speaking (fixes iOS Bluetooth first-utterance bug)
+  _primeAudioRoute(_speak);
+
+  // iOS PWA fallback: if synthesis never starts within 700ms, show tap-to-hear
   if (isIOS) {
     setTimeout(() => {
       if (!speechStarted) {
+        clearTimeout(safetyTimer);
         window.speechSynthesis.cancel();
         _addTapToHearBtn(text, bubbleEl);
       }
-    }, 600);
+    }, 700);
   }
 }
 

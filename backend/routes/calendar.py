@@ -23,6 +23,9 @@ def get_calendar_events():
         events = get_events(start, end)
         return jsonify({'events': events})
     except Exception as e:
+        import traceback
+        print(f"[calendar/events] get_events raised: {e}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 

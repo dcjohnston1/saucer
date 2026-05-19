@@ -21,6 +21,7 @@ from lib.email_helpers import (
     _strip_raw_bytes,
 )
 from lib.firestore_client import get_db
+from lib.rate_limiter import check_and_increment
 
 agent_bp = Blueprint('agent', __name__)
 
@@ -31,6 +32,14 @@ def agent_run():
     provided_key = request.headers.get('X-Agent-Key', '')
     if not agent_key or provided_key != agent_key:
         return jsonify({'error': 'Unauthorized'}), 401
+
+    # Per-user rate limit: max_agent_calls_per_user_per_day (default 20)
+    data = request.get_json(force=True, silent=True) or {}
+    user_id = data.get('user', _DAN)
+    rl = check_and_increment(user_id, 'daily_agent_calls', 'max_agent_calls_per_user_per_day', 20)
+    if not rl['allowed']:
+        return jsonify({'error': rl['reason']}), 429
+
     try:
         from agent import run_morning_agent
         briefing_id = run_morning_agent()

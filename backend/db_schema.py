@@ -143,5 +143,42 @@ COLL_BLOCKED_TOPICS = 'blocked_topics'
 COLL_CONVERSATION_HISTORY = 'conversation_history'
 
 # email_store still uses the flat 'emails' collection (pre-Sprint-4 debt)
-# Migration to COLL_USER_EMAILS is tracked for Sprint 5.
+# Migration to COLL_USER_EMAILS is tracked for Sprint 14.
 COLL_EMAILS_LEGACY = 'emails'
+
+# ── Sprint 13 Multi-User Scale Audit ─────────────────────────────────────────
+#
+# NAMESPACED (safe for multi-user):
+#   users/{user_id}/pending_actions/        Sprint 4 — DONE
+#   users/{user_id}/counters/daily_tasks    Sprint 4 — DONE
+#   users/{user_id}/counters/daily_agent_calls   Sprint 13 — DONE
+#   users/{user_id}/counters/daily_voice_calls   Sprint 13 — DONE
+#   users/{user_id}/emails/                 DEFERRED — Sprint 14 named gate
+#
+# FLAT — must migrate before multi-user public launch (suggested order):
+#   1. settings/                     — email_filters, blocked_senders, keyword_filters, etc.
+#                                      Must become users/{user_id}/settings/.
+#                                      Gates per-user filter isolation.
+#   2. hana_notes/                   — Must become users/{user_id}/hana_notes/.
+#                                      Household memory must be per-user.
+#   3. gemini_decisions/             — Must become users/{user_id}/gemini_decisions/.
+#   4. morning_briefings/            — Must become users/{user_id}/morning_briefings/.
+#   5. user_actions/                 — Must become users/{user_id}/user_actions/.
+#   6. conversation_history/         — Must become users/{user_id}/conversation_history/.
+#   7. emails/ (flat, legacy)        — Sprint 14 named gate (highest priority).
+#
+# INTENTIONALLY GLOBAL (no migration needed):
+#   config/limits                    — Global rate limit config. Correct as-is.
+#
+# SAFE WITH user_email FIELD (migration low-urgency):
+#   user_settings/{user_email}       — already keyed by user_email; OK until multi-user.
+#   household_profile/{user_email}   — same.
+#   hana_question_queue/queue        — single household; low urgency.
+#   hana_files/{file_id}             — needs user_email field added before multi-user.
+#   hana_filter_feedback/{doc_id}    — has user_email field; low urgency.
+#   blocked_topics/{doc_id}          — needs user_email/namespacing before multi-user.
+#
+# MIGRATION PRIORITY FOR SPRINT 14+:
+#   Sprint 14: emails/ (named gate) + settings/ (blocks filter isolation)
+#   Sprint 15: hana_notes/, gemini_decisions/, morning_briefings/
+#   Sprint 16: remaining flat collections

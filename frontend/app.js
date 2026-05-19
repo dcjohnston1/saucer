@@ -2898,7 +2898,11 @@ async function openFutureEventsScreen() {
   const content = document.getElementById('calendar-content');
   content.innerHTML = '<p class="empty-state">Loading…</p>';
   document.getElementById('calendar-screen').classList.remove('hidden');
-  await _loadCalendarContent(content, start, end);
+  try {
+    await _loadCalendarContent(content, start, end);
+  } catch (err) {
+    content.innerHTML = `<p class="empty-state">Could not load calendar events: ${escapeHtml(err.message)}</p>`;
+  }
   _attachCalendarSwipe(content);
 }
 
@@ -2914,7 +2918,7 @@ async function _loadCalendarContent(content, start, end) {
 
     const events = data.events || [];
     if (events.length === 0) {
-      content.innerHTML = '<p class="empty-state">Nothing on the calendar this week.</p>';
+      content.innerHTML = '<p class="empty-state">No events found in this period.</p>';
       return;
     }
 
@@ -3468,7 +3472,8 @@ async function runScanTodos() {
 
     content.innerHTML = '';
     if (todos.length === 0) {
-      content.innerHTML = '<div class="empty-state">No action items found in these emails.</div>';
+      const scanCount = data.scan_count != null ? data.scan_count : emailIds.length;
+      content.innerHTML = `<div class="empty-state">Scanned ${scanCount} email${scanCount !== 1 ? 's' : ''} — no action items found.</div>`;
       btn.textContent = 'Scan again';
       btn.disabled = false;
       return;

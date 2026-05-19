@@ -22,6 +22,7 @@ from flask import Blueprint, request, jsonify, Response
 
 from voice_handler import transcribe_audio, synthesize_speech
 from lib.config import _DAN
+from lib.rate_limiter import check_and_increment
 
 voice_bp = Blueprint('voice', __name__)
 
@@ -42,6 +43,11 @@ def voice_run():
     user = request.form.get('user') or request.form.get('user_email') or _DAN
     user_email = user
     conversation_id = request.form.get('conversation_id') or str(uuid.uuid4())
+
+    # Per-user rate limit: max_voice_calls_per_user_per_day (default 30)
+    rl = check_and_increment(user, 'daily_voice_calls', 'max_voice_calls_per_user_per_day', 30)
+    if not rl['allowed']:
+        return jsonify({'error': 'rate_limited', 'message': rl['reason']}), 429
 
     # ── Step 1: Transcribe audio → text ────────────────────────────────────
     try:

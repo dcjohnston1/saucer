@@ -364,6 +364,20 @@ def get_emails():
         visible = [e for e in visible if not _matches_exclude(e)]
         print(f"[/emails] exclude filter: {before_count} -> {len(visible)} emails")
 
+    # Apply sender allowlist — email_store.list_emails() returns ALL stored emails;
+    # we must re-apply the same allowlist used at scan time so that emails stored
+    # before a filter was set (or stored via a path that bypasses scan_emails) do
+    # not surface here. effective_filters includes 'me' so self-sent emails always pass.
+    if effective_filters:
+        allowed_set = set(f.lower() for f in effective_filters)
+        def _sender_allowed_live(e):
+            addr = _extract_sender_addr(e.get('sender', '')).lower()
+            full = e.get('sender', '').lower()
+            return any(a in addr or a in full for a in allowed_set)
+        before_allow = len(visible)
+        visible = [e for e in visible if _sender_allowed_live(e)]
+        print(f"[/emails] allowlist filter: {before_allow} -> {len(visible)} emails")
+
     if blocked_set:
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
@@ -961,7 +975,13 @@ def scan_todos():
     if not emails:
         return jsonify({'todos': []})
 
-    proposals = scan_emails_for_todos(emails)
+    try:
+        proposals = scan_emails_for_todos(emails)
+    except Exception as ex:
+        import traceback
+        print(f"[scan-todos] scan_emails_for_todos raised: {ex}")
+        traceback.print_exc()
+        return jsonify({'todos': [], 'scan_count': len(emails), 'error': str(ex)}), 500
 
     # Build subject lookup for the response
     subject_by_id = {e['id']: e.get('subject', '') for e in emails}
@@ -993,7 +1013,7 @@ def scan_todos():
                 'source_spans': item.get('source_spans') or [],
             })
 
-    return jsonify({'todos': todos})
+    return jsonify({'todos': todos, 'scan_count': len(emails)})
 
 
 @emails_bp.route('/emails/<path:email_id>/accept-todo', methods=['POST'])

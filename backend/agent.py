@@ -79,6 +79,22 @@ GMAIL DRAFTS:
 - When in doubt, do not draft. One well-chosen draft is better than three unnecessary ones.
 - Always populate the reasoning parameter with why this email warrants a reply.
 
+PASSIVE LEARNING:
+- If this email reveals household facts worth remembering (a recurring appointment, a family member mentioned,
+  a preference stated), call save_note before writing the briefing.
+- Before calling save_note on a topic you may have noted before (grocery preferences, family schedules,
+  recurring appointments, etc.), call search_memory first. If you find an existing note that contradicts
+  what you are about to write, state the correction explicitly in the content argument.
+  Example: "Dan and Emily use Whole Foods, not Trader Joe's, for most grocery shopping."
+  This helps the merge detect and remove the contradiction.
+
+BRIEFING ATTRIBUTION RULE:
+- Only claim a specific task assignment or commitment in your briefing if you called add_todo or
+  reassign_task for it earlier in this same session.
+- If an email merely mentions that someone will help with something, report it as email context —
+  do not present it as a Hana decision.
+  Example: say "The email mentions Emily will help Julia get ready" — not "I've assigned Emily to help Julia get ready."
+
 BRIEFING: Tell each person what's relevant to them. Start with the main point. Sign off warmly."""
 
 AGENT_SYSTEM_PROMPT = """You are Hana running your morning review. No user is present. Your job:
@@ -116,6 +132,11 @@ KNOWLEDGE GAPS:
 PASSIVE LEARNING:
 - If any overnight email reveals household facts worth remembering (a recurring appointment,
   a family member mentioned, a preference stated), call save_note before writing the briefing.
+- Before calling save_note on a topic you may have noted before (grocery preferences, family schedules,
+  recurring appointments, etc.), call search_memory first. If you find an existing note that contradicts
+  what you are about to write, state the correction explicitly in the content argument.
+  Example: "Dan and Emily use Whole Foods, not Trader Joe's, for most grocery shopping."
+  This helps the merge detect and remove the contradiction.
 
 GMAIL DRAFTS:
 - If any overnight email clearly warrants a reply — an RSVP, a scheduling request, a direct
@@ -125,6 +146,13 @@ GMAIL DRAFTS:
 - Do NOT draft replies to newsletters, marketing, automated notifications, or ambiguous emails.
 - When in doubt, do not draft. One well-chosen draft is better than several unnecessary ones.
 - Always populate the reasoning parameter.
+
+BRIEFING ATTRIBUTION RULE:
+- Only claim a specific task assignment or commitment in your briefing if you called add_todo or
+  reassign_task for it earlier in this same session.
+- If an email merely mentions that someone will help with something, report it as email context —
+  do not present it as a Hana decision.
+  Example: say "The email mentions Emily will help Julia get ready" — not "I've assigned Emily to help Julia get ready."
 
 When finished reviewing all emails, call write_briefing with both messages.
 If there are no overnight emails, still call write_briefing with a brief "all quiet overnight" message for each user."""
@@ -586,12 +614,22 @@ def _make_agent_draft_reply(agent_state: dict, user_id: str = None, full_prompt:
 
 
 def _make_write_briefing(db, agent_state: dict, overnight_emails: list):
-    def write_briefing(dan_message: str, emily_message: str):
+    def write_briefing(dan_message: str, emily_message: str, briefing_assertions: list = None):
         """Write and store the morning briefing. Call this when you have finished reviewing all emails.
 
         Args:
             dan_message: Morning message for Dan. Warm, direct, 3-6 sentences.
             emily_message: Morning message for Emily. Warm, direct, 3-6 sentences.
+            briefing_assertions: Optional list of structured claims made in the briefing.
+                Each entry is an object with:
+                  - person: "dan" or "emily"
+                  - claim_type: "task_assignment", "email_detail", or "reminder"
+                  - text: the claim as written in the briefing
+                  - source: "email" (you read it in an email) or "hana_decision" (you called add_todo/reassign_task)
+                  - decision_id: the Firestore gemini_decisions doc ID if source is "hana_decision", else null
+                For each person-specific fact in the briefing, add an entry here.
+                Use source="email" if you are reporting something from an email you read.
+                Use source="hana_decision" with the decision_id if you are reporting a task you added or reassigned.
         """
         briefing_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -607,12 +645,15 @@ def _make_write_briefing(db, agent_state: dict, overnight_emails: list):
             'dan_seen': False,
             'emily_seen': False,
         }
+        if briefing_assertions:
+            doc['briefing_assertions'] = briefing_assertions
         db.collection('morning_briefings').document(briefing_id).set(doc)
         agent_state['briefing_id'] = briefing_id
         print(
             f"[agent] Briefing written: {briefing_id} "
             f"tasks={agent_state['tasks_added']} "
-            f"dismissed={agent_state['emails_dismissed']}"
+            f"dismissed={agent_state['emails_dismissed']} "
+            f"assertions={len(briefing_assertions) if briefing_assertions else 0}"
         )
         return {'status': 'ok', 'briefing_id': briefing_id}
     return write_briefing

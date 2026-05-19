@@ -699,6 +699,13 @@ def process_message(user, message, history=None, user_email=None, conversation_i
         a role clarification. Do NOT announce to the user that you're saving a note.
         Do NOT ask permission. Just save it.
 
+        IMPORTANT: Before calling save_note on a familiar topic (grocery preferences,
+        family schedules, recurring appointments, role division, etc.), call
+        search_memory_tool first. If you find an existing note that contradicts what
+        you are about to write, state the correction explicitly in the content field.
+        Example: "Dan and Emily use Whole Foods, not Trader Joe's, for most grocery shopping."
+        This helps the merge detect and remove the contradiction.
+
         Topic is freeform -- invent a name that captures the subject naturally.
         Content should be warm, first-person prose as if writing notes for yourself.
         Do not save sensitive personal information (medical details, financial specifics,

@@ -2951,3 +2951,117 @@ body { overflow-y: auto; height: auto; }
   margin-bottom: 14px;
   font-style: italic;
 }
+
+/* ── Suggested Tasks (Scan-for-Tasks) section ────────────────────────────── */
+#suggested-tasks-section {
+  margin-top: 24px;
+  padding-bottom: 24px;
+}
+
+#suggested-tasks-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+#suggested-tasks-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.scan-todos-btn {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #4a90d9;
+  background: none;
+  border: 1px solid #4a90d9;
+  border-radius: 20px;
+  padding: 4px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.scan-todos-btn:hover { background: #4a90d9; color: #fff; }
+.scan-todos-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.todo-proposal-wrapper {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  touch-action: pan-y;
+  margin-bottom: 10px;
+}
+
+.todo-proposal-card {
+  position: relative;
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  cursor: grab;
+}
+
+.todo-proposal-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #222;
+  margin-bottom: 4px;
+}
+
+.todo-proposal-notes {
+  font-size: 0.82rem;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.todo-date {
+  font-size: 0.78rem;
+  color: #4a90d9;
+  margin-bottom: 4px;
+}
+
+.todo-source-email {
+  font-size: 0.75rem;
+  color: #999;
+  margin-bottom: 4px;
+}
+
+.todo-source-span {
+  font-size: 0.75rem;
+  color: #888;
+  font-style: italic;
+  border-left: 3px solid #e0e0e0;
+  padding-left: 8px;
+  margin-top: 4px;
+}
+
+.todo-proposal-hint {
+  font-size: 0.7rem;
+  color: #bbb;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.swipe-todo-action-bg {
+  position: absolute;
+  inset: 0;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  transition: background 0.15s ease;
+}
+
+.swipe-todo-accept-bg {
+  background: #27ae60;
+  justify-content: flex-start;
+}
+
+.swipe-todo-reject-bg {
+  background: #e74c3c;
+  justify-content: flex-end;
+}

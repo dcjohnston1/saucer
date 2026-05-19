@@ -902,19 +902,13 @@ def backfill_sender():
 
 @emails_bp.route('/email/<path:email_id>/excerpt', methods=['GET'])
 def get_email_excerpt(email_id):
-    from gcs import read_json
     e = email_store.get_email(email_id)
     if not e:
         return jsonify({'error': 'Not found'}), 404
     body = (e.get('body') or e.get('snippet') or '')[:2000]
-    proposals_all = read_json('saucer-proposals.json', {})
-    props = proposals_all.get(email_id, [])
-    source_spans = list({
-        span
-        for p in props
-        for span in (p.get('source_spans') or [])
-        if span
-    })
+    # source_spans are stored on the Firestore email doc by /emails/scan-todos.
+    # Fall back to empty list if the field is not yet present.
+    source_spans = e.get('source_spans') or []
     return jsonify({
         'subject': e.get('subject', ''),
         'sender': e.get('sender', ''),
@@ -922,3 +916,109 @@ def get_email_excerpt(email_id):
         'body': body,
         'source_spans': source_spans,
     })
+
+
+@emails_bp.route('/emails/scan-todos', methods=['POST'])
+def scan_todos():
+    """Scan emails for household action items.
+
+    Accepts: { "email_ids": ["id1", "id2", ...] }
+    If email_ids is empty or omitted, scans all currently visible emails (up to 20).
+    Returns: { "todos": [ { "email_id", "id", "title", "notes", "date_expression", "source_spans" }, ... ] }
+
+    Also writes source_spans to each email's Firestore doc for use by /email/<id>/excerpt.
+    """
+    from email_scanner import scan_emails_for_todos
+
+    data = request.get_json(force=True) or {}
+    email_ids = data.get('email_ids') or []
+
+    if email_ids:
+        emails = email_store.get_emails_by_ids(email_ids)
+    else:
+        emails = email_store.list_emails(
+            limit=20,
+            exclude_dismissed=True,
+            exclude_reviewed=True,
+            exclude_blocked_verdict=True,
+            include_body=True,
+        )
+
+    if not emails:
+        return jsonify({'todos': []})
+
+    proposals = scan_emails_for_todos(emails)
+
+    # Build subject lookup for the response
+    subject_by_id = {e['id']: e.get('subject', '') for e in emails}
+
+    todos = []
+    for email_id, items in proposals.items():
+        # Deduplicate and flatten source_spans for this email across all proposals
+        all_spans = list({
+            span
+            for item in items
+            for span in (item.get('source_spans') or [])
+            if span
+        })
+        # Write source_spans to Firestore email doc for the excerpt route
+        if all_spans:
+            try:
+                email_store.update_email_fields(email_id, {'source_spans': all_spans})
+            except Exception as ex:
+                print(f"[scan-todos] failed to write source_spans for {email_id}: {ex}")
+
+        for item in items:
+            todos.append({
+                'email_id': email_id,
+                'email_subject': subject_by_id.get(email_id, ''),
+                'id': item.get('id', ''),
+                'title': item.get('title', ''),
+                'notes': item.get('notes', ''),
+                'date_expression': item.get('date_expression', ''),
+                'source_spans': item.get('source_spans') or [],
+            })
+
+    return jsonify({'todos': todos})
+
+
+@emails_bp.route('/emails/<path:email_id>/accept-todo', methods=['POST'])
+def accept_todo(email_id):
+    """Accept an extracted to-do and add it to the household Google Doc.
+
+    Accepts: { "todo_id": str, "title": str, "notes": str, "date_expression": str, "user": str }
+    """
+    from mediator import add_todo
+
+    data = request.get_json(force=True) or {}
+    title = (data.get('title') or '').strip()
+    if not title:
+        return jsonify({'error': 'Missing title'}), 400
+
+    notes = data.get('notes') or ''
+    date_expression = data.get('date_expression') or None
+    user = _req_user(data)
+    assignee = data.get('assignee') or None
+
+    result = add_todo(
+        title=title,
+        date_expression=date_expression,
+        notes=notes,
+        assignee=assignee,
+        source_email_id=email_id,
+        source='user-accepted-scan',
+    )
+
+    if result.get('status') == 'ok':
+        log_action(user, 'task_added', {'title': title, 'source_email_id': email_id}, actor='user')
+
+    return jsonify({'ok': True, 'result': result})
+
+
+@emails_bp.route('/emails/<path:email_id>/reject-todo', methods=['POST'])
+def reject_todo(email_id):
+    """Reject an extracted to-do. No backend action required — frontend removes the card.
+
+    Accepts: { "todo_id": str }
+    """
+    return jsonify({'ok': True})

@@ -51,6 +51,7 @@ Merge these into a single cohesive note. Rules:
 - Keep all facts from the existing note that are still valid
 - Add new facts from the new information
 - Update any facts that have changed (use the newer version)
+- If NEW INFORMATION contradicts a fact in EXISTING NOTE, remove the old fact entirely and use only the new version. Do not keep both versions of a contradictory statement.
 - Do not duplicate information
 - Write as direct factual statements — never narrate the note's existence
   Right: "Dan is allergic to shellfish and gluten."

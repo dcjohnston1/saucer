@@ -9,6 +9,9 @@ let sessionPrevSeenAt = 0;
 let onboardingHistory = [];
 let _currentBriefingId = null;
 let _currentBriefingMessage = '';
+// Holds the morning briefing text to inject as Hana's first chat history entry
+// when the user opens chat from the briefing modal. Cleared after first sendMessage().
+let _briefingContextMessage = '';
 
 const _highlightsCache = new Map();
 
@@ -389,6 +392,9 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pill-todos').addEventListener('click', () => { _markPillSeen('pill-todos'); document.getElementById('pill-todos').querySelector('.pill-new-dot')?.remove(); openListScreen(); });
   document.getElementById('pill-dismissed').addEventListener('click', () => { _markPillSeen('pill-dismissed'); document.getElementById('pill-dismissed').querySelector('.pill-new-dot')?.remove(); openHanaDismissedScreen(); });
 
+  // Scan for tasks button
+  document.getElementById('scan-todos-btn').addEventListener('click', runScanTodos);
+
   // Check for existing session
   const stored = localStorage.getItem('saucer_user');
   if (stored) {
@@ -637,6 +643,11 @@ function _renderEmailsWithGroups(container, emails) {
       const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
       container.appendChild(buildEmailCard(email, isNew));
     });
+  }
+  // Show the suggested tasks section once emails are loaded
+  const tasksSection = document.getElementById('suggested-tasks-section');
+  if (tasksSection && emails.length > 0) {
+    tasksSection.classList.remove('hidden');
   }
 }
 
@@ -2255,11 +2266,22 @@ async function sendMessage() {
   sendBtn.disabled = true;
   const typing = appendMessage('saucer', '…', true);
 
+  // If opening from morning briefing, prepend the briefing as Hana's first history entry
+  // so the backend has full briefing context for this conversation. Clear after first use.
+  let historyToSend = conversationHistory;
+  if (_briefingContextMessage) {
+    historyToSend = [
+      { role: 'assistant', content: _briefingContextMessage },
+      ...conversationHistory,
+    ];
+    _briefingContextMessage = '';
+  }
+
   try {
     const res = await fetch(`${BACKEND_URL}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: currentUser.name, user_email: currentUser.email, message: text, history: conversationHistory, conversation_id: conversationId, voice_mode: voiceModeActive })
+      body: JSON.stringify({ user: currentUser.name, user_email: currentUser.email, message: text, history: historyToSend, conversation_id: conversationId, voice_mode: voiceModeActive })
     });
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
@@ -3093,6 +3115,186 @@ function closeDatePickerModal() {
   _pendingCalendarWrapper = null;
 }
 
+// ── Scan for Tasks (Todo Proposals with Swipe) ───────────────────────────────
+
+async function runScanTodos() {
+  const btn = document.getElementById('scan-todos-btn');
+  const content = document.getElementById('suggested-tasks-content');
+  if (!btn || !content) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  content.innerHTML = '<div class="loading">Analyzing emails for action items…</div>';
+
+  try {
+    // Collect visible email IDs from the current email list
+    const emailIds = [];
+    document.querySelectorAll('.email-card-wrapper[data-email-id]').forEach(el => {
+      emailIds.push(el.dataset.emailId);
+    });
+
+    const res = await fetch(`${BACKEND_URL}/emails/scan-todos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email_ids: emailIds }),
+    });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    const todos = data.todos || [];
+
+    content.innerHTML = '';
+    if (todos.length === 0) {
+      content.innerHTML = '<div class="empty-state">No action items found in these emails.</div>';
+      btn.textContent = 'Scan again';
+      btn.disabled = false;
+      return;
+    }
+
+    todos.forEach(todo => buildTodoProposalCard(content, todo));
+    btn.textContent = 'Scan again';
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state">Scan failed: ${escapeHtml(err.message)}</div>`;
+    btn.textContent = 'Try again';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function buildTodoProposalCard(container, todo) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'todo-proposal-wrapper';
+  wrapper.innerHTML = '<div class="swipe-todo-action-bg swipe-todo-reject-bg">Dismiss ✕</div>';
+
+  const card = document.createElement('div');
+  card.className = 'todo-proposal-card';
+
+  const firstSpan = (todo.source_spans && todo.source_spans.length > 0) ? todo.source_spans[0] : null;
+  const spanHtml = firstSpan
+    ? `<div class="todo-source-span">"${escapeHtml(firstSpan)}"</div>`
+    : '';
+  const subjectHtml = todo.email_subject
+    ? `<div class="todo-source-email">From: ${escapeHtml(todo.email_subject)}</div>`
+    : '';
+  const dateHtml = todo.date_expression
+    ? `<div class="todo-date">${escapeHtml(todo.date_expression)}</div>`
+    : '';
+
+  card.innerHTML = `
+    <div class="todo-proposal-title">${escapeHtml(todo.title)}</div>
+    ${todo.notes ? `<div class="todo-proposal-notes">${escapeHtml(todo.notes)}</div>` : ''}
+    ${dateHtml}
+    ${subjectHtml}
+    ${spanHtml}
+    <div class="todo-proposal-hint">Swipe right to add → | ← Swipe left to dismiss</div>
+  `;
+
+  wrapper.appendChild(card);
+  container.appendChild(wrapper);
+  addSwipeToTodoProposal(wrapper, card, todo);
+}
+
+function addSwipeToTodoProposal(wrapper, card, todo) {
+  let startX = 0, startY = 0, deltaX = 0;
+  let dragging = false, didSwipe = false, axisLocked = false, axisIsHorizontal = false;
+  const bgEl = wrapper.querySelector('.swipe-todo-action-bg');
+
+  card.addEventListener('touchstart', (e) => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    dragging = true;
+    didSwipe = false;
+    axisLocked = false;
+    axisIsHorizontal = false;
+    deltaX = 0;
+    card.style.transition = 'none';
+  }, { passive: true });
+
+  card.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      axisLocked = true;
+      axisIsHorizontal = Math.abs(dx) >= Math.abs(dy);
+    }
+    if (!axisIsHorizontal) return;
+    e.preventDefault();
+    deltaX = dx;
+    if (Math.abs(deltaX) > 10) didSwipe = true;
+    card.style.transform = `translateX(${deltaX}px)`;
+    if (bgEl) {
+      if (deltaX > 0) {
+        bgEl.textContent = 'Add to tasks ✓';
+        bgEl.className = 'swipe-todo-action-bg swipe-todo-accept-bg';
+      } else {
+        bgEl.textContent = 'Dismiss ✕';
+        bgEl.className = 'swipe-todo-action-bg swipe-todo-reject-bg';
+      }
+    }
+  }, { passive: false });
+
+  card.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    if (deltaX > 80) {
+      // Right swipe = Accept — add to tasks
+      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+      card.style.transform = 'translateX(110%)';
+      card.style.opacity = '0';
+      card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+      acceptTodoProposal(todo);
+    } else if (deltaX < -80) {
+      // Left swipe = Reject — dismiss
+      card.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+      card.style.transform = 'translateX(-110%)';
+      card.style.opacity = '0';
+      card.addEventListener('transitionend', () => wrapper.remove(), { once: true });
+      rejectTodoProposal(todo);
+    } else {
+      // Snap back
+      card.style.transition = 'transform 0.25s ease';
+      card.style.transform = 'translateX(0)';
+      if (bgEl) {
+        bgEl.textContent = 'Dismiss ✕';
+        bgEl.className = 'swipe-todo-action-bg swipe-todo-reject-bg';
+      }
+    }
+    deltaX = 0;
+  });
+}
+
+async function acceptTodoProposal(todo) {
+  try {
+    await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(todo.email_id)}/accept-todo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        todo_id: todo.id,
+        title: todo.title,
+        notes: todo.notes || '',
+        date_expression: todo.date_expression || null,
+        user: currentUser ? currentUser.email : '',
+      }),
+    });
+    showToast('Task added ✓');
+  } catch (err) {
+    console.error('acceptTodo error:', err);
+  }
+}
+
+async function rejectTodoProposal(todo) {
+  try {
+    await fetch(`${BACKEND_URL}/emails/${encodeURIComponent(todo.email_id)}/reject-todo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ todo_id: todo.id }),
+    });
+  } catch (err) {
+    // Rejection is best-effort
+  }
+}
+
 // ── Morning Briefing ──────────────────────────────────────────────────────────
 
 async function checkMorningBriefing() {
@@ -3158,19 +3360,24 @@ function openBriefingChat() {
   const id = _currentBriefingId;
   const message = _currentBriefingMessage;
   _currentBriefingId = null;
+  _currentBriefingMessage = '';
   _closeBriefingModal();
   _markBriefingSeen(id);
-  // Open chat panel with briefing pre-loaded as context
+
+  // Store briefing message for injection into chat history on the first send
+  _briefingContextMessage = message || '';
+
+  // Open chat panel
   openChat();
-  setTimeout(() => {
-    const input = document.getElementById('chat-input');
-    if (input && message) {
-      const prelude = `Morning briefing context: "${message.slice(0, 300)}${message.length > 300 ? '…' : ''}" — `;
-      input.value = prelude;
-      input.focus();
-      input.setSelectionRange(input.value.length, input.value.length);
-    }
-  }, 300);
+
+  // Display the briefing message as Hana's first bubble in the chat
+  if (message) {
+    setTimeout(() => {
+      appendMessage('saucer', message);
+      const input = document.getElementById('msg-input');
+      if (input) input.focus();
+    }, 200);
+  }
 }
 
 // ── Question Queue Polling ────────────────────────────────────────────────────

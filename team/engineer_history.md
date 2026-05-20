@@ -510,6 +510,14 @@ The `evaluate_email_intent` prompt's PERMITTED SENDER RULE contained: "a data vi
 ### Architectural note on the two-gate design
 The current design evaluates intent THEN checks sender allowlist only as a content-eval bypass. The permitted shortcut should be the FIRST gate, not a shortcut inside the intent evaluator. The line-282 check is correct in principle but fragile because it depends on normalization being identical in two places. Future cleanup: centralize the permitted-sender check into a single `is_permitted_sender(email, permitted_set_trigger)` helper called once, before `evaluate_email_intent` is ever invoked. This was not fixed in this incident to keep the change minimal.
 
+### Revised recovery finding
+The email was NOT stuck in Firestore with `verdict=blocked`. Firestore showed `19e432019b4c6b9e` with `verdict=permitted` — a prior Pub/Sub delivery stored it correctly before the retried deliveries got a blocked in-memory verdict from Gemini. The email was hidden because it was in `saucer-dismissed.json` (the GCS dismissed list). Removed it from the dismissed list directly; email surfaced in the app immediately.
+
+The `excluded (verdict=blocked)` log was from a RETRY delivery, not the initial one. On retry, `email_exists` returned True so the Firestore doc was not overwritten, but the in-memory blocked verdict was used by `_is_excluded` to suppress Cloud Task enqueuing (correct — the Cloud Task was already enqueued from the first delivery).
+
+### New technical debt item noted
+Why did the email land in `saucer-dismissed.json`? Possible paths: (1) Hana's `process_single_email` Cloud Task ran and some tool call dismissed it, (2) the CEO dismissed it, (3) there's an automated dismiss path that fires on certain conditions. The dismissed list should be append-only from explicit user gestures — no automated path should write to it. Worth auditing before Sprint 15.
+
 ### Backlog item added
 `[BACKLOG-01] Gmail Watch Expiry Monitor` — Size S — added to `sprint_results.md` Backlog section.
 

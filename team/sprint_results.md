@@ -313,9 +313,13 @@ Branch A confirmed. The self-email from `dcjohnston1@gmail.com` (subject "to-do'
 - **`routes/agent.py`:** `sender_filters` and `blocked_senders` now built with `.strip().lower()` when constructing `permitted_set_trigger` and `blocked_set_trigger`. Added structured DROP log lines at every drop point: verdict-blocked, no-filter-match, unknown-account, no-service. Format: `[email-trigger] DROP email_id=X sender=Y recipient=Z verdict=W reason=R`.
 - **`routes/emails.py`:** `_run_intent_eval_batch` now short-circuits permitted senders before calling Gemini, matching the pattern in `agent_email_trigger`.
 
-### Manual Recovery
+### Manual Recovery — Actual Path
 
-Called `POST /emails/resync` after deploy. The resync re-evaluates all stored emails including the blocked self-email. With the new SELF-EMAIL RULE in the prompt, the "to-do's" email is reclassified as `permitted` and surfaces in the app.
+The email was NOT blocked in Firestore. Direct Firestore inspection showed `19e432019b4c6b9e` (subject: "to-do's") with `verdict=permitted`. The email was correctly stored by an earlier Pub/Sub delivery (one of the 5 at 10:03 PM). The log showing `excluded (verdict=blocked)` was from a LATER Pub/Sub retry where the in-memory Gemini verdict was blocked — but because `email_exists` returned True, the Firestore document was not overwritten. Cloud Task enqueuing was correctly suppressed on the retried deliveries (the email was already in Firestore and the Cloud Task was already enqueued from the first delivery).
+
+The email was hidden because it was in `saucer-dismissed.json` (the GCS dismissed list). How it got there is unclear — most likely the automated `process_single_email` Cloud Task ran, Hana processed it, and some downstream action dismissed it. Alternatively the CEO may have swiped to dismiss it in the app.
+
+Recovery: removed `19e432019b4c6b9e` from `saucer-dismissed.json` via direct GCS write. Email now appears in `/emails/cached` with `verdict=permitted`. Confirmed via API call.
 
 ### No Stale History ID Issue
 

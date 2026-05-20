@@ -396,3 +396,47 @@ Bug 3: Resolved as a side effect of Bug 1b. buildProposalRow was correct through
 - "No to-dos found" chosen over "No to-dos" to signal Hana checked — trust UX, not just empty state.
 
 **What is next:** Sprint 15 — Emails Namespace Migration + Mobile Screens + Emily Gate.
+
+---
+
+## 2026-05-20 Huddle
+
+**Topics:**
+- CEO raised a niche-first GTM question, citing Campily (summer camp parents) as a model for targeting one underserved segment before expanding.
+- Marketing presented 5 candidate niches; top recommendation: independent real estate agents (~2M US, high willingness to pay, concentrated and reachable, named acute pain point).
+- Strategy noted the team has implicitly been building for dual-income parents all along; positioning language has not caught up. Recommendation: make the implicit explicit and retire "busy professionals" framing.
+- Finance modeled both niches: real estate clears the $220K profitability gate at Y1 conservative (2,000 users); parents have a larger ceiling but diffuse acquisition (Y2 base path). Finance recommended sequencing: lead with real estate to prove unit economics, then expand to parents once CAC and retention are measured.
+
+**Decisions:**
+- None locked. CEO directed the team to log the discussion for later.
+
+**Open items:**
+- Whether to set a real estate-specific price point at $20/mo (Finance flagged as a required decision before any GTM work begins).
+- Whether to commit to the real estate beachhead or name parents as the primary segment now.
+
+---
+
+## 2026-05-20 Huddle — Trust Leak in Dismissed View
+
+**Topics:**
+- CEO surfaced screenshot of "Dismissed Emails" view showing a DeKalb County Police safety alert and a Best Buy promo, both labeled "No to-dos found." Asked the team to identify the problem.
+- Designer named it first: same flat treatment for a safety alert and spam erodes trust — brain stops reading reasons, next real warning gets the same shrug.
+- Engineer confirmed the filter's verdict was correct (Nextdoor not in allowlist, no intent match, no keyword hit) but identified the label as the actual bug — Hana never scanned filter-blocked emails, so "No to-dos found" is dishonest.
+- CEO proposed two diagnostic pills: a "Known sender" pill (left of sender, when allowlisted) and a "Relevant topic: [X]" pill (under subject, when freetext intent or keyword fires).
+- Designer pushed for low-weight outline pills in separate rows, no fallback when neither applies. CEO challenged: if neither applies, why is the email in the inbox at all? Designer conceded — absence of either signal IS a filter hole, not a neutral case.
+- Engineer confirmed: pills should be treated as diagnostics. Pill-less inbox emails are bugs to fix upstream, not UI gaps to paper over.
+
+**Decisions locked:**
+- "Not scanned" replaces "No to-dos found" on filter-blocked emails in Dismissed view.
+- Marketing copy: "From someone you trust" (NOT "Known sender" — sounds IT-helpdesk).
+- Topic pill echoes the user's own phrasing ("Matched: school pickup"), not system jargon.
+- Pill visuals: 1px outline, gray #999/#666, 0.7em, separate rows, ~20-char topic truncation.
+- No fallback pill — missing pill = filter hole, fix upstream.
+
+**Sprint 16 — COMPLETE 2026-05-20.**
+- Git commit 3b80e72 pushed to main. Backend revision saucer-backend-00181-l9w, frontend revision saucer-frontend-00128-pj8 both live.
+- All four task scopes shipped: honest "Not scanned" label, trust pill, topic pill, no-fallback rule.
+- Verified: deployed JS/CSS carry all required strings and classes; 38 of 101 cached emails already qualify for the trust pill on next page load; `matched_topic` populates on new emails via the eval batch.
+- **Pending CEO smoke-test:** visual pill placement, color, truncation, and topic pill end-to-end against a real new email. I cannot drive a browser.
+
+**What is next:** Sprint 17 planning, once CEO confirms Sprint 16 lands visually. Open backlog: Sprint 15 decisions (5 outstanding), calendar integration, namespace migration, mobile framework, Emily gate, Privacy Policy + ToS.

@@ -386,3 +386,57 @@ The poisoned 729-email Firestore state was corrected via two direct scripts:
 ### Design Debt Noted
 
 The `/emails/resync` endpoint is synchronous and processes up to 731 emails × 37 Gemini batches in a single HTTP request. This approaches Cloud Run's 5-minute request timeout at current email volume. As the email corpus grows, resync will time out reliably. Future fix: convert resync to a Cloud Tasks-backed async job with progress tracking — same pattern as `process_single_email`. Not urgent today; becomes urgent around 1,500-2,000 emails.
+
+---
+
+## Sprint 16 — Trust Pills + Honest Dismissed Labels — COMPLETE ✓
+
+**Date:** 2026-05-20. **Git commit:** 3b80e72. **Backend revision:** saucer-backend-00181-l9w. **Frontend revision:** saucer-frontend-00128-pj8.
+
+### Source
+
+Live huddle the same afternoon. CEO surfaced a screenshot of two emails (DeKalb County Police safety alert + Best Buy Memorial Day promo) labeled "No to-dos found." Designer flagged it as a trust leak — same flat treatment for a safety alert and spam erodes credibility. Engineer diagnosed: filter correctly excluded these from scanning, but the "No to-dos found" label lies about what happened. CEO directed the fix: tell the truth in Dismissed; add two diagnostic trust pills in the inbox; treat any pill-less inbox email as a filter hole, not a UI gap.
+
+### What Was Built
+
+**Honest Dismissed label** — `frontend/app.js` `buildProposalsSection`. When `email.verdict === 'blocked'`, the placeholder reads "Not scanned" instead of "No to-dos found." Scanned-but-empty emails continue to show "No to-dos found." One-line conditional, no schema change.
+
+**"From someone you trust" pill** — left of the sender address in `buildEmailCard`. Renders only when `verdict_reason === 'Sender is on the permitted list'`. Pure frontend — backend already wrote that exact reason string. Marketing rejected "Known sender" (sounds IT-helpdesk) in favor of "From someone you trust."
+
+**"Matched: {phrase}" pill** — own row under the subject line. Renders when an email has a `matched_topic` field on its doc. Phrase truncated at 20 chars with CSS ellipsis. Marketing locked: echo the user's own phrasing back ("school pickup", "Cub Scouts") rather than system jargon.
+
+**`matched_topic` backend field** — additive, no migration.
+- `_run_intent_eval_batch` (routes/emails.py): keyword fast-track now identifies *which* keyword matched (not just true/false) and writes it to `matched_topic`. Walrus assignment threads it through the loop.
+- `_force_reevaluate_all_emails` (routes/emails.py): pulls `matched_topic` from batch results; clears it on non-permitted transitions.
+- `evaluate_email_intent` + `batch_evaluate_emails_intent` (email_scanner.py): both Gemini JSON schemas extended with a `matched_topic` field. Prompt instructs Gemini to echo the user's own phrase from the intent description ("Cub Scouts" not "scouting"). Only populated when verdict=permitted.
+- Old emails without the field render no topic pill — graceful degradation per acceptance criterion 7.
+
+**No-fallback rule (Task 4)** — both pills use ternaries that return `''` when their trigger isn't met. No else-branch, no generic "Inbox" pill, no fallback. Absence of a pill is a deliberate diagnostic signal that the filter let an email through for an unconfigured reason — a hole to fix upstream, not a UI gap to paper over.
+
+### Pill Visual Spec (Designer-locked)
+
+1px solid `#999` border, transparent background, `#666` text, font-size 0.7em, padding 2px/4px, border-radius 3px. Trust pill sits in the sender row inside a new `.email-sender-group` flex container. Topic pill occupies its own row between subject and any uncertain badge — pills never share a DOM row.
+
+### Files Changed
+
+- `backend/email_scanner.py` — 42 lines: extended `_INTENT_VERDICT_RULES`, both prompt schemas, both result parsers.
+- `backend/routes/emails.py` — 20 lines: keyword match captures matched keyword; both eval paths thread `matched_topic` through.
+- `frontend/app.js` — 13 lines: trust pill, topic pill, Not-scanned conditional in `buildProposalsSection`.
+- `frontend/style.css` — 42 lines: `.email-sender-group`, `.email-trust-pill`, `.email-topic-pill-row`, `.email-topic-pill`. Adjusted `.email-sender` to drop `max-width: 70%` in favor of flex layout.
+
+### Verification
+
+- Backend revision live and healthy (200 OK on `/emails/cached`, `/emails/hana-dismissed`).
+- Frontend asset diff confirmed: served `app.js` contains "From someone you trust", "Matched: ", and "Not scanned" strings; `style.css` contains `.email-trust-pill`.
+- 38 of 101 cached emails already qualify for the trust pill (verdict_reason = "Sender is on the permitted list") — those render immediately on next page load.
+- `matched_topic` field is empty on existing emails (expected — they were evaluated before this deploy). New emails arriving through Pub/Sub will populate it via `_run_intent_eval_batch`. CEO can also trigger `/emails/resync` to backfill, but it's not required for sprint completion.
+
+**Visual checks deferred to CEO:** I cannot drive a browser. Pill placement, color, and truncation rendering need CEO smoke-test sign-off. Acceptance criteria 1, 3, 6 (visual) and 4 (end-to-end with a new email) are pending CEO confirmation.
+
+### Out of Scope (Deferred)
+
+Sprint 15 backlog (CEO smoke-test sign-off, 5 backlog decisions), calendar integration, namespace migration, Emily gate close, React Native vs Flutter, `matched_topic` historical backfill, any pill beyond the two locked. All explicitly punted.
+
+### Next Sprint
+
+Sprint 17 will follow once the CEO smoke-tests Sprint 16 and confirms the pills land. Open standing items for the next planning window: Sprint 15 backlog decisions (still 5 outstanding), Privacy Policy + ToS publication gate, calendar OAuth per-user credentials, calendar integration ("This Week" / "Next Week" hamburger views).

@@ -550,6 +550,56 @@ Other modules (`mediator.py`, `agent.py`, `conversation_history.py`, `routes/fil
 
 ---
 
+## 2026-05-20 — CEO Screenshot: UX Observations (Huddle)
+
+**Observed:** "No to-dos found" label under promotional/neighborhood-watch emails; red notification dots on all three filter tabs simultaneously.
+
+**"No to-dos found" label:** Technically accurate (agent ran and found nothing) but product-wrong. Shows on emails that should never have triggered the agent at all. Recommendation: suppress the label entirely on emails where `proposals` is empty or null. Show nothing. "No to-dos found" implies effort and failure; blank implies correct triage.
+
+**Red dots on all tabs:** All three tabs (This Week, To-Do's, Dismissed Emails) showing dots simultaneously is almost certainly a bug in the notification count logic in `app.js`. Suspect it is counting `emails.length` or a similar always-non-zero value rather than a delta or unread flag. Dismissed tab in particular should only dot when something is newly added to dismissed state.
+
+**Backlog items to add:** (1) Suppress to-do label on emails with no proposals. (2) Fix notification dot logic per-tab. Both are SMALL.
+
+---
+
+## 2026-05-20 — Huddle: DeKalb Police alert in Dismissed (Designer trust flag)
+
+**Question:** Should the Nextdoor / DeKalb County Police safety alert appear given current filters?
+
+**Live filter state pulled from prod (us-east1):**
+- email_intent: "School; extra-curriculars like ballet; summer camps; mental health; Scouts; City of Decatur; Village Walk; Ponce Primary"
+- permitted senders (10): Procare, csdecatur, pestban, ACC, realm, etc. Nextdoor not present.
+- keyword_filters (allow): infinite campus, glenwood, scout, 1st grade
+- exclude_keyword_filters: goblins, "ai release"
+
+**Verdict:** Filter behaved correctly. Nextdoor sender not in allowlist; content (neighborhood safety post) does not match the school/extracurricular intent; no keyword match. verdict=blocked → dismissed_by=hana → Dismissed view is the correct bucket. Same logic correctly blocked the Best Buy promo.
+
+**Real bug Designer is seeing:** the "No to-dos found" label on filter-blocked emails. Hana never ran the to-do agent on these — the intent gate blocked them upstream. The label is a lie that erodes trust. Already on backlog from earlier today (suppress label when proposals is empty/null). Promote to next sprint.
+
+---
+
+## 2026-05-20 — Trust-Signal Pills on Email Cards (CEO huddle)
+
+**Two new pills approved (no objections):**
+
+1. **"Known sender" pill** — left of sender address, top of card. Shown when `verdict_reason == 'Sender is on the permitted list'`. Backend already writes this string. Pure frontend render in `buildEmailCard`. ~30 min.
+
+2. **"Relevant topic: [X]" pill** — under subject line. Two source paths:
+   - **Keyword match:** `_run_intent_eval_batch` and `batch_evaluate_emails_intent` already detect the matched keyword internally. Capture the specific matched string into a new `matched_topic` field on the email doc instead of the generic "Matches user keyword filter" reason. Small backend change.
+   - **Freetext intent match:** Extend the Gemini JSON schema in `batch_evaluate_emails_intent` to require an additional `matched_topic` field (short phrase, e.g. "school", "scouts") when verdict=permitted. Additive field, no schema migration risk. ~5 extra output tokens per email — cost-negligible.
+
+**Tech debt risk:** None. `matched_topic` is purely additive — old emails default to null/missing and frontend just hides the pill. No reverse-compatibility issue.
+
+**Sizing:** Small-medium total. ~1-2 hours backend (schema + prompt update + write path in both `_run_intent_eval_batch` and `batch_evaluate_emails_intent`) + ~1 hour frontend (two pill renders, CSS). Lands cleanly in the next sprint.
+
+**Files:**
+- `/home/dcjohnston1/saucer/backend/email_scanner.py` — add `matched_topic` to verdict object
+- `/home/dcjohnston1/saucer/backend/routes/emails.py` — write `matched_topic` alongside `verdict_reason`
+- `/home/dcjohnston1/saucer/frontend/app.js` — `buildEmailCard` renders both pills
+- `/home/dcjohnston1/saucer/frontend/style.css` — pill styles
+
+---
+
 ### Issue 3 — Hana draft surfaces as a separate top-level email card
 
 **Root cause:** When `draft_reply_tool` fires during `process_single_email`, it calls `gcalendar`/Gmail Drafts API to create a Gmail Draft. Gmail Drafts appear in the Gmail Drafts folder, but they also have a `DRAFT` label. The `gmail_scanner.scan_emails` / `fetch_new_messages_since` pipeline fetches messages — depending on how the Gmail API query is scoped, it may be picking up the draft as a new message and storing it in Firestore as a regular email record. When `/emails/cached` returns all stored emails, the draft surfaces alongside real emails with no visual distinction.

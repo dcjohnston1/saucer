@@ -926,6 +926,14 @@ function buildEmailCard(email, isNew = false) {
   const rawReason = email.verdict_reason || '';
   const truncatedReason = rawReason.length > 120 ? rawReason.slice(0, 120) + '…' : rawReason;
   const uncertainBadge = isUncertain ? `<span class="uncertain-badge">Hana wasn't sure: ${escapeHtml(truncatedReason || 'reason not recorded')}</span>` : '';
+  const trustPill = rawReason === 'Sender is on the permitted list'
+    ? '<span class="email-trust-pill">From someone you trust</span>'
+    : '';
+  const rawTopic = (email.matched_topic || '').trim();
+  const truncatedTopic = rawTopic.length > 20 ? rawTopic.slice(0, 20) + '…' : rawTopic;
+  const topicPill = rawTopic
+    ? `<div class="email-topic-pill-row"><span class="email-topic-pill">Matched: ${escapeHtml(truncatedTopic)}</span></div>`
+    : '';
   // Show the first source span as a highlighted quote block on the card (Item 3).
   // source_spans are written by scan-todos and stored on the Firestore email doc.
   const firstSpan = (email.source_spans && email.source_spans.length > 0) ? email.source_spans[0] : null;
@@ -934,11 +942,12 @@ function buildEmailCard(email, isNew = false) {
     : '';
   card.innerHTML = `
     <div class="email-meta">
-      <span class="email-sender">${escapeHtml(email.sender)}</span>
+      <div class="email-sender-group">${trustPill}<span class="email-sender">${escapeHtml(email.sender)}</span></div>
       <div class="email-meta-right-group">${newBadge}<span class="email-date">${escapeHtml(formatEmailDate(email.date))}</span></div>
     </div>
     ${accountBadge}
     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
+    ${topicPill}
     ${uncertainBadge}
     <div class="${previewClass}">${escapeHtml(previewText)}${(!summary && bodyText.length > 220) ? '…' : ''}</div>
     ${spanQuote}
@@ -1171,7 +1180,7 @@ function buildProposalsSection(card, email) {
   if (email.proposals === undefined || email.proposals === null) {
     const msg = document.createElement('div');
     msg.className = 'proposals-scanning';
-    msg.textContent = 'No to-dos found';
+    msg.textContent = email.verdict === 'blocked' ? 'Not scanned' : 'No to-dos found';
     section.appendChild(msg);
     card.appendChild(section);
     return;

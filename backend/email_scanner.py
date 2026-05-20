@@ -37,6 +37,13 @@ _INTENT_VERDICT_RULES = (
     'Includes ALL promotional/retail/marketing emails, professional newsletters, and industry digests, even from trusted senders. '
     'When in doubt between "uncertain" and "blocked" for off-topic content: choose "blocked." '
     'Reason: one sentence naming what the email was about and which intent it failed to match.\n'
+    '\n'
+    'matched_topic field — only set when verdict is "permitted". '
+    'Echo the user\'s own phrasing from the intent description that this email matched — '
+    'e.g. if the user wrote "school activities, Cub Scouts, permission slips" and the email is about a Cub Scouts meeting, '
+    'matched_topic must be "Cub Scouts" (their exact phrase, not "scouting" or "kids activities"). '
+    'Keep it short — ideally 1–3 words from the user\'s text. '
+    'For "uncertain" and "blocked" verdicts, set matched_topic to null.\n'
 )
 
 
@@ -78,7 +85,7 @@ def evaluate_email_intent(email, email_intent, blocked_senders=None, permitted_s
     prompt = (
         f'The user has described the emails that belong in their space as: "{email_intent}"\n\n'
         f'Evaluate this email and return a JSON object:\n'
-        f'{{"verdict": "permitted" | "uncertain" | "blocked", "confidence": 0.0-1.0, "reason": "one specific sentence"}}\n\n'
+        f'{{"verdict": "permitted" | "uncertain" | "blocked", "confidence": 0.0-1.0, "reason": "one specific sentence", "matched_topic": "<short phrase from user intent or null>"}}\n\n'
         f'SELF-EMAIL RULE (highest priority, checked first): If the From address and the To/recipient address '
         f'are the same (the person emailed themselves), AND the body contains tasks, to-dos, action items, '
         f'reminders, or structured notes, verdict MUST be "permitted". '
@@ -102,14 +109,20 @@ def evaluate_email_intent(email, email_intent, blocked_senders=None, permitted_s
         verdict = result.get('verdict', 'uncertain')
         if verdict not in ('permitted', 'uncertain', 'blocked'):
             verdict = 'uncertain'
+        matched_topic = result.get('matched_topic') if verdict == 'permitted' else None
+        if isinstance(matched_topic, str):
+            matched_topic = matched_topic.strip() or None
+        else:
+            matched_topic = None
         return {
             'verdict': verdict,
             'confidence': float(result.get('confidence', 0.5)),
             'reason': result.get('reason', ''),
+            'matched_topic': matched_topic,
         }
     except Exception as e:
         print(f"Intent eval error: {e}")
-        return {'verdict': 'uncertain', 'confidence': 0.5, 'reason': 'Evaluation error — showing as uncertain'}
+        return {'verdict': 'uncertain', 'confidence': 0.5, 'reason': 'Evaluation error — showing as uncertain', 'matched_topic': None}
 
 
 def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, blocked_senders=None, permitted_senders=None, keyword_filters=None):
@@ -123,7 +136,8 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
     blocked_set = {s.lower() for s in (blocked_senders or [])}
     permitted_set = {s.lower() for s in (permitted_senders or [])}
     excl_lower = [kw.lower() for kw in (excluded_keywords or [])]
-    kw_lower = [kw.lower() for kw in (keyword_filters or [])]
+    keyword_originals = list(keyword_filters or [])
+    kw_lower = [kw.lower() for kw in keyword_originals]
     excl_str = ', '.join(excl_lower) if excl_lower else 'none'
 
     to_evaluate = []
@@ -151,8 +165,13 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
                 e.get('subject', ''),
                 (e.get('body', '') or e.get('snippet', ''))[:2000],
             ]).lower()
-            if any(kw in haystack for kw in kw_lower):
-                results[email_id] = {'verdict': 'permitted', 'reason': 'Matches user keyword filter'}
+            matched_kw = next((orig for orig, low in zip(keyword_originals, kw_lower) if low in haystack), None)
+            if matched_kw:
+                results[email_id] = {
+                    'verdict': 'permitted',
+                    'reason': 'Matches user keyword filter',
+                    'matched_topic': matched_kw,
+                }
                 continue
 
         if not email_intent:
@@ -178,7 +197,7 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
             f'The household\'s email intent is: "{email_intent}"\n'
             f'Excluded subjects/keywords (always block, even from permitted senders): {excl_str}\n\n'
             f'Evaluate each of the following emails and return ONLY a JSON array of verdict objects in the same order.\n'
-            f'Each object: {{"verdict": "permitted"|"uncertain"|"blocked", "reason": "one specific sentence"}}\n\n'
+            f'Each object: {{"verdict": "permitted"|"uncertain"|"blocked", "reason": "one specific sentence", "matched_topic": "<short phrase from user intent or null>"}}\n\n'
             f'PERMITTED SENDER RULE: A permitted sender means do not block based on sender identity alone. '
             f'It does NOT mean default to "uncertain" when content fails the intent test. '
             f'Evaluate ALL emails on content — a data viz newsletter, retail promotion, or professional digest is "blocked" even if sent by a household member or trusted address.\n\n'
@@ -201,7 +220,16 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
                     verdict = v.get('verdict', 'uncertain')
                     if verdict not in ('permitted', 'uncertain', 'blocked'):
                         verdict = 'uncertain'
-                    results[email_id] = {'verdict': verdict, 'reason': v.get('reason', '')}
+                    matched_topic = v.get('matched_topic') if verdict == 'permitted' else None
+                    if isinstance(matched_topic, str):
+                        matched_topic = matched_topic.strip() or None
+                    else:
+                        matched_topic = None
+                    results[email_id] = {
+                        'verdict': verdict,
+                        'reason': v.get('reason', ''),
+                        'matched_topic': matched_topic,
+                    }
                 else:
                     results[email_id] = {'verdict': 'uncertain', 'reason': 'Evaluation incomplete'}
         except Exception as ex:

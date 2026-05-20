@@ -113,33 +113,41 @@ def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, li
     if not needs_eval:
         return
     permitted_set = set(permitted_list)
-    kw_lower = [kw.lower() for kw in (keyword_filters or [])]
+    keyword_originals = list(keyword_filters or [])
+    kw_lower = [kw.lower() for kw in keyword_originals]
 
     def _kw_match(email_dict):
         if not kw_lower:
-            return False
+            return None
         haystack = ' '.join([
             email_dict.get('subject', ''),
             (email_dict.get('body', '') or email_dict.get('snippet', ''))[:2000],
         ]).lower()
-        return any(kw in haystack for kw in kw_lower)
+        for original, lowered in zip(keyword_originals, kw_lower):
+            if lowered in haystack:
+                return original
+        return None
 
     for e in needs_eval:
         try:
             sender_addr = _extract_sender_addr(e.get('sender', ''))
+            matched_kw = None
             if sender_addr in permitted_set:
                 e['verdict'] = 'permitted'
                 e['verdict_confidence'] = 1.0
                 e['verdict_reason'] = 'Sender is on the permitted list'
-            elif _kw_match(e):
+            elif (matched_kw := _kw_match(e)):
                 e['verdict'] = 'permitted'
                 e['verdict_confidence'] = 1.0
                 e['verdict_reason'] = 'Matches user keyword filter'
+                e['matched_topic'] = matched_kw
             else:
                 result = evaluate_email_intent(e, email_intent, blocked_set, permitted_set, excluded_keywords=excluded_keywords)
                 e['verdict'] = result['verdict']
                 e['verdict_confidence'] = result['confidence']
                 e['verdict_reason'] = result['reason']
+                if result.get('matched_topic'):
+                    e['matched_topic'] = result['matched_topic']
                 if result['verdict'] == 'blocked':
                     e['dismissed_by'] = 'hana'
         except Exception as ex:
@@ -169,6 +177,10 @@ def _force_reevaluate_all_emails(emails, email_intent, excluded_keywords, blocke
             e['verdict'] = new_verdict
             e['verdict_reason'] = r['reason']
             e.pop('verdict_confidence', None)
+            if r.get('matched_topic'):
+                e['matched_topic'] = r['matched_topic']
+            elif new_verdict != 'permitted':
+                e.pop('matched_topic', None)
             if new_verdict == 'blocked':
                 e['dismissed_by'] = 'hana'
             elif e.get('dismissed_by') == 'hana':

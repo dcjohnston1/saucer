@@ -1086,6 +1086,14 @@ mark.search-highlight {
   margin-bottom: 4px;
 }
 
+.email-sender-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
 .email-sender {
   font-size: 0.8rem;
   font-weight: 600;
@@ -1093,7 +1101,39 @@ mark.search-highlight {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 70%;
+  min-width: 0;
+}
+
+.email-trust-pill {
+  display: inline-block;
+  font-size: 0.7em;
+  line-height: 1.2;
+  color: #666;
+  background: transparent;
+  border: 1px solid #999;
+  border-radius: 3px;
+  padding: 2px 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.email-topic-pill-row {
+  margin: 2px 0 4px;
+}
+
+.email-topic-pill {
+  display: inline-block;
+  font-size: 0.7em;
+  line-height: 1.2;
+  color: #666;
+  background: transparent;
+  border: 1px solid #999;
+  border-radius: 3px;
+  padding: 2px 4px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .email-meta-right-group {

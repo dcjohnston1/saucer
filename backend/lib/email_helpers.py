@@ -3,9 +3,13 @@ import re
 
 
 def _extract_sender_addr(sender_str: str) -> str:
-    """Return the bare email address from a From: header, lowercased."""
+    """Return the bare email address from a From: header, lowercased and stripped.
+
+    Handles angle-bracket format ("Name <addr@example.com>") and plain address format.
+    Always strips whitespace so stored Firestore values with trailing spaces compare correctly.
+    """
     m = re.search(r'<([^>]+)>', sender_str)
-    return m.group(1).lower() if m else sender_str.lower()
+    return m.group(1).strip().lower() if m else sender_str.strip().lower()
 
 
 def _get_email_intent(db) -> str:

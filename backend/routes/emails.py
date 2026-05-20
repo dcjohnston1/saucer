@@ -101,20 +101,32 @@ def _get_excluded_keywords(db) -> list:
 
 
 def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, limit=20, excluded_keywords=None):
-    """Evaluate intent for emails missing a verdict. Mutates emails in place."""
+    """Evaluate intent for emails missing a verdict. Mutates emails in place.
+
+    Permitted senders short-circuit Gemini evaluation entirely — the user's explicit
+    allowlist is authoritative. Only non-permitted, non-blocked senders go through
+    content-based Gemini classification.
+    """
     from email_scanner import evaluate_email_intent
+    from lib.email_helpers import _extract_sender_addr
     needs_eval = [e for e in emails if 'verdict' not in e][:limit]
     if not needs_eval:
         return
     permitted_set = set(permitted_list)
     for e in needs_eval:
         try:
-            result = evaluate_email_intent(e, email_intent, blocked_set, permitted_set, excluded_keywords=excluded_keywords)
-            e['verdict'] = result['verdict']
-            e['verdict_confidence'] = result['confidence']
-            e['verdict_reason'] = result['reason']
-            if result['verdict'] == 'blocked':
-                e['dismissed_by'] = 'hana'
+            sender_addr = _extract_sender_addr(e.get('sender', ''))
+            if sender_addr in permitted_set:
+                e['verdict'] = 'permitted'
+                e['verdict_confidence'] = 1.0
+                e['verdict_reason'] = 'Sender is on the permitted list'
+            else:
+                result = evaluate_email_intent(e, email_intent, blocked_set, permitted_set, excluded_keywords=excluded_keywords)
+                e['verdict'] = result['verdict']
+                e['verdict_confidence'] = result['confidence']
+                e['verdict_reason'] = result['reason']
+                if result['verdict'] == 'blocked':
+                    e['dismissed_by'] = 'hana'
         except Exception as ex:
             print(f"[intent_eval] error for {e.get('id')}: {ex}")
             e['verdict'] = 'uncertain'

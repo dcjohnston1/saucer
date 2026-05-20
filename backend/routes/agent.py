@@ -173,6 +173,7 @@ def agent_email_trigger():
         history_key = 'last_history_id_emily'
         refresh_token_key = 'GMAIL_REFRESH_TOKEN_2'
     else:
+        print(f"[email-trigger] DROP email_id=unknown sender=unknown recipient={email_address} verdict=unknown reason='unrecognized account'")
         print(f"[email-trigger] unknown account: {email_address}, ignoring")
         return jsonify({'ok': True})
 
@@ -223,6 +224,7 @@ def agent_email_trigger():
     from gmail_scanner import _build_service, fetch_new_messages_since, setup_gmail_watch
     service = _build_service(refresh_token_key)
     if not service:
+        print(f"[email-trigger] DROP email_id=unknown sender=unknown recipient={email_address} verdict=unknown reason='could not build Gmail service'")
         print(f"[email-trigger] no Gmail service for {email_address}")
         return jsonify({'ok': True})
 
@@ -252,7 +254,9 @@ def agent_email_trigger():
     # Load filters from Firestore
     db = get_db()
     sender_doc = db.collection('settings').document('email_filters').get()
-    sender_filters = [s.lower() for s in (sender_doc.to_dict().get('addresses', []) if sender_doc.exists else [])]
+    # Strip whitespace from stored addresses — Firestore values may have trailing spaces
+    # that cause silent comparison failures against the extracted sender address.
+    sender_filters = [s.strip().lower() for s in (sender_doc.to_dict().get('addresses', []) if sender_doc.exists else [])]
 
     kw_doc = db.collection('settings').document('keyword_filters').get()
     keyword_filters = kw_doc.to_dict().get('keywords', []) if kw_doc.exists else []
@@ -264,20 +268,33 @@ def agent_email_trigger():
     exclude_keywords = excl_doc.to_dict().get('keywords', []) if excl_doc.exists else []
 
     email_intent = _get_email_intent(db)
-    blocked_set_trigger = {b.lower() for b in blocked_senders}
+    blocked_set_trigger = {b.strip().lower() for b in blocked_senders}
     permitted_set_trigger = set(sender_filters)
 
-    # Run intent eval on new emails before merging
+    # Run intent eval on new emails before merging.
+    # Permitted senders (the allowlist) short-circuit intent eval entirely.
+    # The allowlist exists precisely because the user trusts those senders; Gemini
+    # content-based classification is not authoritative over an explicit human trust signal.
+    # Blocked senders and excluded keywords still take priority and are enforced inside
+    # evaluate_email_intent before any Gemini call.
     if new_emails:
         from email_scanner import evaluate_email_intent
+        from lib.email_helpers import _extract_sender_addr as _esa
         for e in new_emails:
             if 'verdict' not in e:
-                result = evaluate_email_intent(e, email_intent, blocked_set_trigger, permitted_set_trigger, excluded_keywords=exclude_keywords)
-                e['verdict'] = result['verdict']
-                e['verdict_confidence'] = result['confidence']
-                e['verdict_reason'] = result['reason']
-                if result['verdict'] == 'blocked':
-                    e['dismissed_by'] = 'hana'
+                sender_addr = _esa(e.get('sender', ''))
+                if sender_addr in permitted_set_trigger:
+                    # Permitted sender — skip Gemini eval; mark as permitted unconditionally.
+                    e['verdict'] = 'permitted'
+                    e['verdict_confidence'] = 1.0
+                    e['verdict_reason'] = 'Sender is on the permitted list'
+                else:
+                    result = evaluate_email_intent(e, email_intent, blocked_set_trigger, permitted_set_trigger, excluded_keywords=exclude_keywords)
+                    e['verdict'] = result['verdict']
+                    e['verdict_confidence'] = result['confidence']
+                    e['verdict_reason'] = result['reason']
+                    if result['verdict'] == 'blocked':
+                        e['dismissed_by'] = 'hana'
 
     # Auto-save PDFs from permitted emails before stripping bytes
     _auto_save_pdf_attachments(new_emails, db)
@@ -313,7 +330,11 @@ def agent_email_trigger():
         print(f"[email-trigger] _is_excluded check addr={addr!r} blocked_set={blocked_set_trigger}")
         if any(b in raw or b in addr for b in blocked_set_trigger):
             return True
-        if email_dict.get('verdict') == 'blocked':
+        # A verdict of 'blocked' excludes the email — UNLESS the sender is on the permitted
+        # list, in which case the user has explicitly opted this sender in.  The permitted
+        # shortcut above should have set verdict='permitted' for these, but this guard
+        # ensures correctness even if a stale 'blocked' verdict is present on the dict.
+        if email_dict.get('verdict') == 'blocked' and addr not in permitted_set_trigger:
             return True
         if exclude_keywords:
             haystack = ' '.join([
@@ -326,11 +347,21 @@ def agent_email_trigger():
         return False
 
     for email in new_emails:
+        email_id = email.get('id', '')
+        sender = email.get('sender', '')
+        sender_addr = _extract_sender_addr(sender)
+        recipient = email_address  # account the notification came in for
         subj = email.get('subject', '(no subject)')
+        verdict = email.get('verdict', 'unknown')
+
         if _is_excluded(email):
-            print(f"[email-trigger] excluded (verdict={email.get('verdict')}): {subj}")
+            reason = email.get('verdict_reason', 'excluded by verdict or blocked sender or keyword')
+            print(f"[email-trigger] DROP email_id={email_id} sender={sender_addr} recipient={recipient} verdict={verdict} reason={reason!r}")
+            print(f"[email-trigger] excluded (verdict={verdict}): {subj}")
             continue
         if not (_sender_matches(email.get('sender', '')) or _keyword_matches(email)):
+            reason = 'no sender allowlist match and no keyword match'
+            print(f"[email-trigger] DROP email_id={email_id} sender={sender_addr} recipient={recipient} verdict={verdict} reason={reason!r}")
             print(f"[email-trigger] no filter match, skipping: {subj}")
             continue
 

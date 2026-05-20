@@ -344,3 +344,45 @@ A scheduled job checks how many hours remain until the watch expires and fires a
   - Cloud Scheduler job (one-time setup in GCP console or Terraform) — no code file, just a console action.
 - **Alerting:** The log line `[watch-health] ALERT` is searchable in Cloud Logging. A Cloud Monitoring log-based alert (already available for free tier) can be set to notify on this string via email or PagerDuty. No new infrastructure needed.
 - **Size: S.** The endpoint is ~30 lines. Cloud Scheduler setup is 5 minutes. Log-based alert setup is 10 minutes. Total estimated effort: 1-2 hours.
+
+---
+
+## Production Incident — 2026-05-20 — 105 Emails Showing "Evaluation Error" Badge — RESOLVED
+
+**Git commit:** a11b09a. **Backend revision:** saucer-backend-00181-l9w.
+
+### Root Cause
+
+`google.generativeai` v0.8.6 on Cloud Run was falling back to Application Default Credentials (ADC — the Cloud Run service account) instead of the `GOOGLE_API_KEY` env var. The service account does not have the `https://www.googleapis.com/auth/generative-language` scope, so every Gemini call in `batch_evaluate_emails_intent` returned `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`. The exception handler in that function defaulted all 729 emails to `verdict=uncertain` with reason "Evaluation error — showing as uncertain". The `/emails/resync` call was triggered at ~3:11 AM UTC, poisoning all emails in Firestore.
+
+The `google.generativeai` package was already deprecated as of this version — the boot logs showed `FutureWarning: All support for the google.generativeai package has ended.` This was the underlying cause of the auth behavior change.
+
+### Fixes Applied
+
+**email_scanner.py** — Migrated from `google.generativeai` to `google.genai` (new SDK). All five `GenerativeModel(...).generate_content()` call sites replaced with `_get_client().models.generate_content(model=..., contents=..., config=...)`. Client instantiated lazily via `_get_client()` to avoid import failure when `GOOGLE_API_KEY` is not set. New SDK uses `Client(api_key=...)` pattern and never falls back to ADC.
+
+**requirements.txt** — Added `google-genai` alongside `google-generativeai`. FutureWarning eliminated from boot sequence.
+
+**routes/agent.py** — Added keyword fast-track in `agent_email_trigger`. Before calling `evaluate_email_intent`, if a new email matches any keyword in `keyword_filters`, it is immediately set to `verdict=permitted` without a Gemini call. Same logic as the existing sender-allowlist fast-track. Keyword-matched emails (e.g. "Ponce Primary" emails, Scout emails) can never be falsely uncertain due to Gemini failures.
+
+**routes/emails.py** — Added keyword fast-track to `_run_intent_eval_batch` (new `keyword_filters` parameter, threaded through to call sites in `/emails` and `/emails/resync`). Also added keyword fast-track and permitted-sender fast-track to `batch_evaluate_emails_intent` in `email_scanner.py` — the batch path previously had no pre-filter for either, leaving them exposed to Gemini failures even for explicitly trusted signals.
+
+### Manual Recovery
+
+The poisoned 729-email Firestore state was corrected via two direct scripts:
+
+1. **Fix permitted/keyword matches:** Iterated all `verdict=uncertain` emails in Firestore. 226 were corrected to `verdict=permitted` (sender in allowlist or keyword match). 499 were genuinely uncertain (no allowlist/keyword match, no body available for keyword check).
+
+2. **Clear poisoned verdicts:** Iterated remaining 498 uncertain emails with `verdict_reason = "Evaluation error — showing as uncertain"`. Cleared `verdict` and `verdict_reason` fields — these now have no verdict and will be re-evaluated by Gemini (now working) on the next `/emails` call (up to 20 per call per request).
+
+### State After Fix
+
+- 231 emails: `verdict=permitted` (correctly set by fix script)
+- 0 emails: `verdict=uncertain` (none — poisoned state cleared)
+- 2 emails: `verdict=blocked`
+- 498 emails: no verdict (pending Gemini re-evaluation, will drip in at ≤20/request)
+- Ponce Primary Care emails: verdict cleared — will come back `permitted` on next `/emails` call since intent description explicitly references "Ponce Primary"
+
+### Design Debt Noted
+
+The `/emails/resync` endpoint is synchronous and processes up to 731 emails × 37 Gemini batches in a single HTTP request. This approaches Cloud Run's 5-minute request timeout at current email volume. As the email corpus grows, resync will time out reliably. Future fix: convert resync to a Cloud Tasks-backed async job with progress tracking — same pattern as `process_single_email`. Not urgent today; becomes urgent around 1,500-2,000 emails.

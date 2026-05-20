@@ -523,6 +523,33 @@ Why did the email land in `saucer-dismissed.json`? Possible paths: (1) Hana's `p
 
 ---
 
+## 2026-05-20 — Production Incident: 105 Emails Showing "Evaluation error" Badge
+
+### Root cause
+`google.generativeai` v0.8.6 on Cloud Run started falling back to ADC instead of `GOOGLE_API_KEY` for some Gemini API calls. The Cloud Run service account does not have `https://www.googleapis.com/auth/generative-language` scope, so every `batch_evaluate_emails_intent` call returned `403 ACCESS_TOKEN_SCOPE_INSUFFICIENT`. All 729 emails were set to `verdict=uncertain` by the `/emails/resync` run at ~3:11 AM UTC.
+
+### Fix
+**email_scanner.py:** Migrated to `google.genai` (new SDK). Client initialized lazily via `_get_client()` using `genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))`. All five `GenerativeModel(...).generate_content()` call sites replaced with `_get_client().models.generate_content(model=..., contents=..., config=genai_types.GenerateContentConfig(...))`. New SDK never falls back to ADC when api_key is provided.
+
+**requirements.txt:** Added `google-genai`. FutureWarning gone from boot sequence.
+
+**routes/agent.py + routes/emails.py + email_scanner.py:** Added keyword fast-track everywhere a permitted-sender fast-track exists. Keyword-matched emails (`keyword_filters` doc in Firestore) are immediately `verdict=permitted` without a Gemini call. This makes them robust to any future Gemini API failure.
+
+### Architectural note: resync timeout risk
+`/emails/resync` runs synchronously. At 731 emails, it generates ~37 Gemini batch calls and approaches Cloud Run's 5-minute timeout. Future fix: convert to async Cloud Tasks job. Threshold for urgency: ~1,500-2,000 emails.
+
+### Architectural note: new SDK import pattern
+Other modules (`mediator.py`, `agent.py`, `conversation_history.py`, `routes/filters.py`, `routes/emails.py`) still use `google.generativeai`. They should be migrated to `google.genai` in a hygiene sprint before that SDK stops functioning. The email_scanner migration is the most urgent because it handles the batch resync path where failures have the largest blast radius. The other modules all use `genai.configure(api_key=...)` at module load, which should still work in v0.8.6 for now.
+
+### Key files
+- `/home/dcjohnston1/saucer/backend/email_scanner.py` — migrated to google.genai
+- `/home/dcjohnston1/saucer/backend/requirements.txt` — added google-genai
+- `/home/dcjohnston1/saucer/backend/routes/agent.py` — keyword fast-track added
+- `/home/dcjohnston1/saucer/backend/routes/emails.py` — keyword fast-track added
+- Git commit: a11b09a | Revision: saucer-backend-00181-l9w
+
+---
+
 ### Issue 3 — Hana draft surfaces as a separate top-level email card
 
 **Root cause:** When `draft_reply_tool` fires during `process_single_email`, it calls `gcalendar`/Gmail Drafts API to create a Gmail Draft. Gmail Drafts appear in the Gmail Drafts folder, but they also have a `DRAFT` label. The `gmail_scanner.scan_emails` / `fetch_new_messages_since` pipeline fetches messages — depending on how the Gmail API query is scoped, it may be picking up the draft as a new message and storing it in Firestore as a regular email record. When `/emails/cached` returns all stored emails, the draft surfaces alongside real emails with no visual distinction.

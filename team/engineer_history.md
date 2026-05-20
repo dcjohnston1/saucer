@@ -600,6 +600,33 @@ Other modules (`mediator.py`, `agent.py`, `conversation_history.py`, `routes/fil
 
 ---
 
+## 2026-05-20 — Sprint 17 Complete: Inbox Signal Integrity
+
+### Files modified
+- `/home/dcjohnston1/saucer/frontend/app.js` — `buildProposalsSection` rewrite; new `_emailHasSignal`; new `_appendOtherEmailsTray`; updated `_renderEmailsWithGroups` and `backgroundSync`.
+- `/home/dcjohnston1/saucer/frontend/style.css` — 7 new `.other-emails-*` rules.
+
+### Architectural decisions
+
+**buildProposalsSection: single-branch normalisation.**
+Previous code had two separate rendering paths (null/undefined → early return; array → hasPending check). The bug was conceptual: "No to-dos found" could coexist with a trust pill on cards where proposals happened to be null (i.e. the agent hadn't run on that email yet). New pattern: `Array.isArray` normalises null/undefined/empty to a single count=0 case. The fallback message is a consequence of count, not of the type of the proposals field. Simpler, less branchy, and correct.
+
+**_emailHasSignal: pure function on already-loaded fields.**
+Reads `verdict_reason` and `matched_topic` — both already present on the email object returned by `/emails/cached`. No extra reads. The function is a single expression; easy to test and easy to extend if a third pill type is added later. AC7 compliance is trivially verifiable by inspection.
+
+**Other Emails tray: data attribute as selector anchor.**
+`data-other-emails-tray="1"` lets `backgroundSync` find the tray with a single `querySelector` without coupling to CSS class names. This is the same pattern used for `data-uncertain-header`. Both trays can be styled independently without breaking the JS selector.
+
+**Technical debt logged:**
+- `scan_status` field on email docs would allow distinguishing "never scanned" from "scanned, empty" — would make the "No to-dos found" message more precise. Low priority.
+- Tray body emails are not re-sorted by date during backgroundSync updates. Insertion order only. Acceptable for now.
+
+### Revision
+- Frontend: saucer-frontend-00129-8hd
+- Git commit: 540ab78
+
+---
+
 ### Issue 3 — Hana draft surfaces as a separate top-level email card
 
 **Root cause:** When `draft_reply_tool` fires during `process_single_email`, it calls `gcalendar`/Gmail Drafts API to create a Gmail Draft. Gmail Drafts appear in the Gmail Drafts folder, but they also have a `DRAFT` label. The `gmail_scanner.scan_emails` / `fetch_new_messages_since` pipeline fetches messages — depending on how the Gmail API query is scoped, it may be picking up the draft as a new message and storing it in Firestore as a regular email record. When `/emails/cached` returns all stored emails, the draft surfaces alongside real emails with no visual distinction.

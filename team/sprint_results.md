@@ -440,3 +440,52 @@ Sprint 15 backlog (CEO smoke-test sign-off, 5 backlog decisions), calendar integ
 ### Next Sprint
 
 Sprint 17 will follow once the CEO smoke-tests Sprint 16 and confirms the pills land. Open standing items for the next planning window: Sprint 15 backlog decisions (still 5 outstanding), Privacy Policy + ToS publication gate, calendar OAuth per-user credentials, calendar integration ("This Week" / "Next Week" hamburger views).
+
+---
+
+## Sprint 17 — Inbox Signal Integrity — COMPLETE ✓
+
+**Date:** 2026-05-20. **Git commit:** 540ab78. **Frontend revision:** saucer-frontend-00129-8hd. No backend changes.
+
+### Source
+
+CEO smoke-test of Sprint 16 surfaced two trust regressions: (1) trusted-sender cards showing both a proposal card and "No to-dos found" simultaneously — a contradictory state; (2) pill-less emails appearing in the primary inbox with zero explanatory context, undermining the trust-pill investment.
+
+### What Was Built
+
+**Task 1 — Fix contradictory "No to-dos found" (Bug B)**
+
+`buildProposalsSection` in `frontend/app.js` rewritten. Previous code had a separate early-return branch for null/undefined proposals that always showed "No to-dos found" — but the condition did not account for the case where both a trust pill and proposals exist on the same card (the pill renders in `buildEmailCard`, the fallback in a parallel code path). New code: `Array.isArray(email.proposals)` normalises null/undefined to an empty array. A single `renderedCount === 0` gate controls whether "No to-dos found" appears. If `renderedCount >= 1`, proposal cards render and the fallback is suppressed entirely. No `hasPending` intermediate variable — the logic is now a single branch on count.
+
+**Task 2 — "Other Emails" collapsed tray (Bug A)**
+
+New `_emailHasSignal(email)` pure function: returns true when `verdict_reason === 'Sender is on the permitted list'` OR `matched_topic` is non-empty. Uses only already-loaded Firestore fields — no new reads.
+
+`_renderEmailsWithGroups` now splits permitted emails into `primaryEmails` (signal present) and `otherEmails` (no signal) before rendering. Primary emails render first. If `otherEmails.length > 0`, a new `_appendOtherEmailsTray(container, otherEmails)` call builds the secondary section.
+
+`_appendOtherEmailsTray`: creates a `.other-emails-tray` div with `data-other-emails-tray="1"` marker. Header toggle shows "Other Emails" + count badge + chevron. Body div has class `other-emails-body hidden` (collapsed by default). Click on toggle flips `hidden`, updates `aria-expanded`, and rotates the chevron between `▸` and `▾`. Each email in the tray is built with normal `buildEmailCard` — full card rendering, not a stripped-down view.
+
+`backgroundSync` updated to split new permitted emails with the same `_emailHasSignal` classifier. New pill-less emails route into the existing tray (incrementing the count) or create a new tray if none exists.
+
+**CSS** — 7 new rules added to `style.css` under `.other-emails-tray`. Muted palette: `#d1d5db` count badge, `#9ca3af` title and chevron. Mirrors the uncertain-section visual language without the amber warning color — lower prominence by design.
+
+### Acceptance Criteria — All 7 PASS
+
+1. Card with trust pill + at least one proposal: "No to-dos found" suppressed. `renderedCount >= 1` branch never appends the fallback node. PASS.
+2. Card with no proposals (null/undefined/[]): "No to-dos found" still renders. `Array.isArray` normalises all three cases to count=0. PASS.
+3. Pill-less email does NOT appear in primary inbox. `_emailHasSignal` returns false → filtered to `otherEmails` → not rendered in primary list. PASS.
+4. Same email appears in "Other Emails" collapsed tray. `_appendOtherEmailsTray` appends the card to the tray body. PASS.
+5. Tray collapsed by default, shows count. `body.className = 'other-emails-body hidden'` + count span initialized with `otherEmails.length`. PASS.
+6. Expanding tray shows full card rendering. Toggle removes `hidden`; cards built via `buildEmailCard` with no changes. PASS.
+7. No additional Gemini calls, Firestore reads, or API requests. `_emailHasSignal` reads from the already-loaded email object. No `fetch()` calls added. PASS.
+
+### Files Changed
+
+- `frontend/app.js` — 112 net insertions: `_emailHasSignal`, `_appendOtherEmailsTray`, rewrite of `buildProposalsSection`, updated `_renderEmailsWithGroups` and `backgroundSync`.
+- `frontend/style.css` — 38 net insertions: `.other-emails-tray`, `.other-emails-toggle`, `.other-emails-title`, `.other-emails-count`, `.other-emails-chevron`, `.other-emails-body`.
+
+### Technical Debt Notes
+
+- The "No to-dos found" message now appears on ALL emails with no proposals (null/undefined included). This means trusted-sender emails that have never had the agent run will show "No to-dos found" — which is slightly inaccurate (it hasn't scanned yet, vs. scanned and found nothing). A future sprint could distinguish these states by adding a `scan_status` field to email docs (e.g. `unscanned | scanned_empty | scanned_with_results`). Not urgent — current behavior is acceptable and honest in most cases.
+- The `backgroundSync` tray update path appends new pill-less emails to the existing tray body but does NOT re-sort them by date within the body. Emails in the tray will appear in insertion order. Acceptable for now; sorting the tray body on sync is a small future improvement.
+- `_emailHasSignal` is defined before `_renderEmailsWithGroups` in the file. `backgroundSync` references both. If file ordering changes, ensure `_emailHasSignal` stays hoisted or moved to a shared utilities section.

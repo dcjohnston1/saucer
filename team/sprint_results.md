@@ -289,3 +289,54 @@ Bug 2 Part 2:
 Bug 3: Resolved as a consequence of Bug 1b. buildProposalRow was intact and correct throughout — the proposals field was simply never populated. End-to-end path now: agent runs → add_todo_logged → Firestore email doc updated → /emails/cached returns proposals → buildProposalRow renders swipeable cards.
 
 Deferred to Sprint 15: emails namespace migration, React Native vs. Flutter, marketing strategy, Emily gate.
+
+---
+
+## Production Incident — 2026-05-20 — Self-Email "to-do's" Dropped at Filter Gate — RESOLVED
+
+**Git commit:** 681fe88. **Backend revision:** saucer-backend-00178-758.
+
+### Root Cause
+
+Branch A confirmed. The self-email from `dcjohnston1@gmail.com` (subject "to-do's", ~10:03 PM) was stored in Firestore with `verdict=blocked` from `evaluate_email_intent`. Two compounding failures:
+
+**Failure 1 — Gemini misclassification:** `evaluate_email_intent` was called on the self-email because the permitted-sender shortcut in `agent_email_trigger` (line 282) failed to match. The intent evaluator prompt's PERMITTED SENDER RULE explicitly told Gemini: "a data viz newsletter, retail promotion, or professional digest is blocked even if sent by a household member." Gemini classified a self-email task list as off-topic and returned `verdict=blocked`.
+
+**Failure 2 — Permitted-sender shortcut did not fire:** The permitted-sender check at line 282 compares `sender_addr` (from `_extract_sender_addr`) against `permitted_set_trigger` (built from Firestore `settings/email_filters.addresses`). `_extract_sender_addr` did not call `.strip()` — it called `.lower()` only. Firestore-stored addresses with trailing whitespace would not match. The same gap existed on the `_is_excluded` guard at line 333: even if Gemini returned `blocked`, `addr not in permitted_set_trigger` should have returned False (don't exclude) for permitted senders, but didn't because of the whitespace normalization gap.
+
+**Why the email WAS stored in Firestore:** The `upsert_emails_batch` call runs before the filter loop. The self-email was stored with `verdict=blocked`, which causes `list_emails(exclude_blocked_verdict=True)` to hide it from the app. It was not lost — just hidden.
+
+### Fixes Applied
+
+- **`email_scanner.py`:** Added SELF-EMAIL RULE to `_INTENT_VERDICT_RULES` and the single-email `evaluate_email_intent` prompt. Self-emails with task/to-do/action-item content are always `permitted`. Only blocks self-emails with truly empty or test-only bodies.
+- **`lib/email_helpers.py`:** `_extract_sender_addr` now calls `.strip().lower()` on both code paths (angle-bracket and plain address).
+- **`routes/agent.py`:** `sender_filters` and `blocked_senders` now built with `.strip().lower()` when constructing `permitted_set_trigger` and `blocked_set_trigger`. Added structured DROP log lines at every drop point: verdict-blocked, no-filter-match, unknown-account, no-service. Format: `[email-trigger] DROP email_id=X sender=Y recipient=Z verdict=W reason=R`.
+- **`routes/emails.py`:** `_run_intent_eval_batch` now short-circuits permitted senders before calling Gemini, matching the pattern in `agent_email_trigger`.
+
+### Manual Recovery
+
+Called `POST /emails/resync` after deploy. The resync re-evaluates all stored emails including the blocked self-email. With the new SELF-EMAIL RULE in the prompt, the "to-do's" email is reclassified as `permitted` and surfaces in the app.
+
+### No Stale History ID Issue
+
+The `0 new message(s)` logs at 3:00 AM UTC are expected behavior — those Pub/Sub notifications fired with history IDs that had already been advanced past. Not a separate bug.
+
+---
+
+## Backlog — Sprint 15
+
+### [BACKLOG-01] Gmail Watch Expiry Monitor
+
+**Description:**
+The Gmail push watch expires after 7 days. The current proactive re-watch logic in `agent_email_trigger` only fires when a Pub/Sub notification arrives AND the watch is already expired — meaning if no emails arrive near expiry, the watch silently lapses and all email notifications stop until the next `POST /agent/renew-gmail-watch`. There is no alerting when this happens.
+
+**What it does:**
+A scheduled job checks how many hours remain until the watch expires and fires an alert if under 24 hours.
+
+**Implementation plan:**
+- **Trigger:** Cloud Scheduler cron job, runs once daily (e.g. 8 AM UTC). Calls a new `POST /agent/check-watch-health` endpoint on the backend, authenticated with the existing AGENT_KEY header.
+- **Files touched:**
+  - `routes/agent.py` — new `/agent/check-watch-health` route. Reads `last_watch_established` from `saucer-config.json` in GCS. Computes hours remaining (watches expire after 7 days = 168 hours). If under 24 hours, logs `[watch-health] ALERT watch_expires_in_hours=N` and proactively calls `setup_gmail_watch` to renew early.
+  - Cloud Scheduler job (one-time setup in GCP console or Terraform) — no code file, just a console action.
+- **Alerting:** The log line `[watch-health] ALERT` is searchable in Cloud Logging. A Cloud Monitoring log-based alert (already available for free tier) can be set to notify on this string via email or PagerDuty. No new infrastructure needed.
+- **Size: S.** The endpoint is ~30 lines. Cloud Scheduler setup is 5 minutes. Log-based alert setup is 10 minutes. Total estimated effort: 1-2 hours.

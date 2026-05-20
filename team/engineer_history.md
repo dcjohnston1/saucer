@@ -485,6 +485,36 @@ Inserted between blockOverlay.appendChild and wrapper.appendChild(card) — afte
 - Frontend: saucer-frontend-00127-zxt
 - Git commit: f9d5350
 
+---
+
+## 2026-05-20 — Production Incident: Self-Email "to-do's" Dropped at Filter Gate
+
+### Confirmed root cause: Branch A (intent evaluator blocked it) + normalization gap
+
+**Log evidence:** `[email-trigger] excluded (verdict=blocked): to-do's` with `addr='dcjohnston1@gmail.com'`.
+
+**Failure 1 — Gemini misclassified the self-email:**
+The `evaluate_email_intent` prompt's PERMITTED SENDER RULE contained: "a data viz newsletter, retail promotion, or professional digest is blocked even if sent by a household member." Gemini classified a self-email task list as off-topic under the household intent and returned `verdict=blocked`. The SELF-EMAIL RULE was missing entirely from the prompt — there was no instruction telling Gemini that sender==recipient with action-item content is the strongest possible signal.
+
+**Failure 2 — Permitted-sender shortcut did not fire:**
+`_extract_sender_addr` called `.lower()` without `.strip()`. Firestore-stored addresses with trailing whitespace would not match the extracted address. The same gap in `sender_filters` and `blocked_senders` construction (no `.strip()` before adding to the sets). Result: even though `dcjohnston1@gmail.com` was in the allowlist, the comparison returned False, so neither the line-282 shortcut nor the `_is_excluded` line-333 guard fired correctly.
+
+**Why it was recoverable:** `upsert_emails_batch` runs BEFORE the filter loop. The email was stored in Firestore with `verdict=blocked`. It was hidden by `list_emails(exclude_blocked_verdict=True)`, not lost. `/emails/resync` re-evaluates it with the new prompt and reclassifies it.
+
+### Fixes applied (commit 681fe88, revision saucer-backend-00178-758)
+- `email_scanner.py`: Added SELF-EMAIL RULE to `_INTENT_VERDICT_RULES` and `evaluate_email_intent` prompt preamble.
+- `lib/email_helpers.py`: `_extract_sender_addr` now strips whitespace on both code paths.
+- `routes/agent.py`: `.strip().lower()` on all Firestore address values before set construction. Structured DROP log lines at every drop point.
+- `routes/emails.py`: `_run_intent_eval_batch` short-circuits permitted senders before Gemini call.
+
+### Architectural note on the two-gate design
+The current design evaluates intent THEN checks sender allowlist only as a content-eval bypass. The permitted shortcut should be the FIRST gate, not a shortcut inside the intent evaluator. The line-282 check is correct in principle but fragile because it depends on normalization being identical in two places. Future cleanup: centralize the permitted-sender check into a single `is_permitted_sender(email, permitted_set_trigger)` helper called once, before `evaluate_email_intent` is ever invoked. This was not fixed in this incident to keep the change minimal.
+
+### Backlog item added
+`[BACKLOG-01] Gmail Watch Expiry Monitor` — Size S — added to `sprint_results.md` Backlog section.
+
+---
+
 ### Issue 3 — Hana draft surfaces as a separate top-level email card
 
 **Root cause:** When `draft_reply_tool` fires during `process_single_email`, it calls `gcalendar`/Gmail Drafts API to create a Gmail Draft. Gmail Drafts appear in the Gmail Drafts folder, but they also have a `DRAFT` label. The `gmail_scanner.scan_emails` / `fetch_new_messages_since` pipeline fetches messages — depending on how the Gmail API query is scoped, it may be picking up the draft as a new message and storing it in Firestore as a regular email record. When `/emails/cached` returns all stored emails, the draft surfaces alongside real emails with no visual distinction.

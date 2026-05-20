@@ -339,6 +339,8 @@ def fetch_new_messages_since(service, start_history_id: str) -> tuple:
                 'html_body': html_body,
                 'snippet': message.get('snippet', ''),
                 'attachments': attachments,
+                'labelIds': message.get('labelIds', []),
+                'thread_id': message.get('threadId', ''),
             })
         except Exception as e:
             print(f"[gmail] fetch message {msg_id} error: {e}")

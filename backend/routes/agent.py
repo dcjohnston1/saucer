@@ -283,11 +283,14 @@ def agent_email_trigger():
     _auto_save_pdf_attachments(new_emails, db)
     _strip_raw_bytes(new_emails)
 
-    # Merge new emails into email store so they appear in the app immediately
-    fresh = [e for e in new_emails if not email_store.email_exists(e['id'])]
+    # Merge new emails into email store so they appear in the app immediately.
+    # Exclude DRAFT-labeled messages — Gmail drafts created by Hana would otherwise
+    # surface as top-level email cards instead of appearing inline on the source email.
+    non_draft = [e for e in new_emails if 'DRAFT' not in e.get('labelIds', [])]
+    fresh = [e for e in non_draft if not email_store.email_exists(e['id'])]
     if fresh:
         email_store.upsert_emails_batch(fresh)
-    print(f"[email-trigger] upserted {len(fresh)} new emails into Firestore")
+    print(f"[email-trigger] upserted {len(fresh)} new emails into Firestore (excluded {len(new_emails) - len(non_draft)} draft(s))")
 
     def _sender_matches(sender_str):
         raw = sender_str.lower()

@@ -1108,6 +1108,56 @@ function buildEmailCard(email, isNew = false) {
   blockOverlay.querySelector('.email-block-cancel').addEventListener('click', closeBlockOptions);
   card.appendChild(blockOverlay);
 
+  if (email.draft_pending_action) {
+    const da = email.draft_pending_action;
+    const payload = da.payload || {};
+    const draftSection = document.createElement('div');
+    draftSection.className = 'hana-draft-section';
+
+    const toggle = document.createElement('div');
+    toggle.className = 'hana-draft-toggle';
+    toggle.textContent = 'Hana drafted a reply ▸';
+    toggle.addEventListener('click', () => {
+      const body = draftSection.querySelector('.hana-draft-body');
+      const isOpen = !body.classList.contains('hidden');
+      body.classList.toggle('hidden', isOpen);
+      toggle.textContent = isOpen ? 'Hana drafted a reply ▸' : 'Hana drafted a reply ▾';
+    });
+
+    const draftBody = document.createElement('div');
+    draftBody.className = 'hana-draft-body hidden';
+
+    const subjectEl = document.createElement('div');
+    subjectEl.className = 'hana-draft-subject';
+    subjectEl.textContent = payload.subject || '';
+
+    const previewEl = document.createElement('div');
+    previewEl.className = 'hana-draft-preview';
+    previewEl.textContent = (payload.body_preview || '').slice(0, 150);
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'hana-draft-actions';
+
+    const openBtn = document.createElement('button');
+    openBtn.className = 'hana-draft-open';
+    openBtn.textContent = 'Open in Gmail';
+    openBtn.addEventListener('click', () => window.open('https://mail.google.com/mail/u/0/#drafts', '_blank'));
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'hana-draft-dismiss';
+    dismissBtn.textContent = 'Dismiss';
+    dismissBtn.addEventListener('click', () => draftSection.remove());
+
+    actionsEl.appendChild(openBtn);
+    actionsEl.appendChild(dismissBtn);
+    draftBody.appendChild(subjectEl);
+    draftBody.appendChild(previewEl);
+    draftBody.appendChild(actionsEl);
+    draftSection.appendChild(toggle);
+    draftSection.appendChild(draftBody);
+    card.appendChild(draftSection);
+  }
+
   wrapper.appendChild(card);
   const bodyPreview = (email.body || email.snippet || '').slice(0, 300);
   addSwipeToDismiss(wrapper, card, email.id, email.sender, email.subject || '', bodyPreview, email.verdict || 'permitted');
@@ -1121,7 +1171,7 @@ function buildProposalsSection(card, email) {
   if (email.proposals === undefined || email.proposals === null) {
     const msg = document.createElement('div');
     msg.className = 'proposals-scanning';
-    msg.textContent = 'Checking for action items…';
+    msg.textContent = 'No to-dos found';
     section.appendChild(msg);
     card.appendChild(section);
     return;

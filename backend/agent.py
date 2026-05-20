@@ -365,6 +365,24 @@ def _make_agent_add_todo(agent_state: dict, context_available: str, full_prompt:
             )
             if dec_id:
                 agent_state['decision_ids'].append(dec_id)
+            # Write the proposal back to the Firestore email doc so the frontend
+            # can render it as a swipeable card without an additional scan-todos call.
+            if source_email_id:
+                try:
+                    proposal_entry = {
+                        'id': str(uuid.uuid4()),
+                        'title': title,
+                        'notes': notes or '',
+                        'date_expression': date_expression or '',
+                        'source_spans': [],
+                    }
+                    existing = _email_store.get_email(source_email_id) or {}
+                    current_proposals = existing.get('proposals') or []
+                    current_proposals.append(proposal_entry)
+                    _email_store.update_email_fields(source_email_id, {'proposals': current_proposals})
+                    print(f"[agent] wrote proposals to email doc email_id={source_email_id} count={len(current_proposals)}")
+                except Exception as _pe:
+                    print(f"[agent] failed to write proposals to email doc: {_pe}")
         return result
     return add_todo_logged
 
@@ -560,6 +578,7 @@ def _make_agent_draft_reply(agent_state: dict, user_id: str = None, full_prompt:
                 'body_preview': body[:200],
                 'draft_id': result.get('draft_id'),
                 'source_email_id': source_email_id,
+                'thread_id': thread_id,
             },
             confidence=action_confidence,
             email_id=source_email_id,

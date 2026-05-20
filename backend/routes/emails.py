@@ -6,6 +6,8 @@ from flask import Blueprint, request, jsonify, Response
 from google.cloud.firestore import DELETE_FIELD
 
 import email_store
+import pending_actions
+from lib.config import _DAN
 from lib.firestore_client import get_db
 from lib.email_helpers import (
     _extract_sender_addr,
@@ -429,6 +431,25 @@ def get_cached_emails():
     if blocked_set:
         visible = [e for e in visible if _extract_sender_addr(e.get('sender', '')) not in blocked_set
                    and e.get('sender', '').lower() not in blocked_set]
+
+    # Single batch load of pending draft actions — join to emails by thread_id so
+    # the frontend can render an inline "Hana drafted a reply" section on the source
+    # email card rather than surfacing the draft as a top-level entry.
+    try:
+        draft_actions = pending_actions.list_pending_actions(_DAN, status='pending')
+        draft_by_thread = {}
+        for da in draft_actions:
+            if da.get('action_type') == 'gmail_draft':
+                tid = da.get('payload', {}).get('thread_id')
+                if tid:
+                    draft_by_thread[tid] = da
+        if draft_by_thread:
+            for e in visible:
+                tid = e.get('thread_id') or e.get('threadId')
+                if tid and tid in draft_by_thread:
+                    e['draft_pending_action'] = draft_by_thread[tid]
+    except Exception as _dpe:
+        print(f"[emails/cached] failed to join draft pending actions: {_dpe}")
 
     return jsonify({'emails': visible})
 

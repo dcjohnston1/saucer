@@ -100,12 +100,12 @@ def _get_excluded_keywords(db) -> list:
     return [kw.lower() for kw in (doc.to_dict().get('keywords', []) if doc.exists else [])]
 
 
-def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, limit=20, excluded_keywords=None):
+def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, limit=20, excluded_keywords=None, keyword_filters=None):
     """Evaluate intent for emails missing a verdict. Mutates emails in place.
 
-    Permitted senders short-circuit Gemini evaluation entirely — the user's explicit
-    allowlist is authoritative. Only non-permitted, non-blocked senders go through
-    content-based Gemini classification.
+    Permitted senders and keyword-matched emails short-circuit Gemini evaluation entirely —
+    the user's explicit allowlist and keyword filter are authoritative. Only non-permitted,
+    non-keyword-matched, non-blocked senders go through content-based Gemini classification.
     """
     from email_scanner import evaluate_email_intent
     from lib.email_helpers import _extract_sender_addr
@@ -113,6 +113,17 @@ def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, li
     if not needs_eval:
         return
     permitted_set = set(permitted_list)
+    kw_lower = [kw.lower() for kw in (keyword_filters or [])]
+
+    def _kw_match(email_dict):
+        if not kw_lower:
+            return False
+        haystack = ' '.join([
+            email_dict.get('subject', ''),
+            (email_dict.get('body', '') or email_dict.get('snippet', ''))[:2000],
+        ]).lower()
+        return any(kw in haystack for kw in kw_lower)
+
     for e in needs_eval:
         try:
             sender_addr = _extract_sender_addr(e.get('sender', ''))
@@ -120,6 +131,10 @@ def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, li
                 e['verdict'] = 'permitted'
                 e['verdict_confidence'] = 1.0
                 e['verdict_reason'] = 'Sender is on the permitted list'
+            elif _kw_match(e):
+                e['verdict'] = 'permitted'
+                e['verdict_confidence'] = 1.0
+                e['verdict_reason'] = 'Matches user keyword filter'
             else:
                 result = evaluate_email_intent(e, email_intent, blocked_set, permitted_set, excluded_keywords=excluded_keywords)
                 e['verdict'] = result['verdict']
@@ -132,7 +147,7 @@ def _run_intent_eval_batch(emails, email_intent, blocked_set, permitted_list, li
             e['verdict'] = 'uncertain'
 
 
-def _force_reevaluate_all_emails(emails, email_intent, excluded_keywords, blocked_set, permitted_set):
+def _force_reevaluate_all_emails(emails, email_intent, excluded_keywords, blocked_set, permitted_set, keyword_filters=None):
     """Re-evaluate ALL emails (ignoring existing verdicts) using batched Gemini calls.
 
     Mutates emails in place. Returns counts dict: {total, permitted, uncertain, blocked}.
@@ -143,6 +158,7 @@ def _force_reevaluate_all_emails(emails, email_intent, excluded_keywords, blocke
         excluded_keywords=excluded_keywords,
         blocked_senders=blocked_set,
         permitted_senders=permitted_set,
+        keyword_filters=keyword_filters,
     )
     counts = {'total': len(emails), 'permitted': 0, 'uncertain': 0, 'blocked': 0}
     for e in emails:
@@ -327,7 +343,7 @@ def get_emails():
     excluded_keywords = _get_excluded_keywords(db)
 
     # Intent eval, PDF auto-save, and byte-strip run on new emails before upserting
-    _run_intent_eval_batch(new_emails, email_intent, blocked_set, permitted_list, excluded_keywords=excluded_keywords)
+    _run_intent_eval_batch(new_emails, email_intent, blocked_set, permitted_list, excluded_keywords=excluded_keywords, keyword_filters=keywords)
     _auto_save_pdf_attachments(new_emails, db)
     _strip_raw_bytes(new_emails)
     for e in new_emails:
@@ -506,7 +522,7 @@ def resync_emails():
     )
     # Merge new emails in-memory for batch re-eval
     merged_for_eval = new_emails + [e for e in all_stored if e['id'] not in {e2['id'] for e2 in new_emails}]
-    eval_counts = _force_reevaluate_all_emails(merged_for_eval, email_intent, excluded_keywords, blocked_set, set(permitted_list))
+    eval_counts = _force_reevaluate_all_emails(merged_for_eval, email_intent, excluded_keywords, blocked_set, set(permitted_list), keyword_filters=keywords)
     print(f"[resync] re-eval complete: {eval_counts}")
 
     _auto_save_pdf_attachments(merged_for_eval, db)

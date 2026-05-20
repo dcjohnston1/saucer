@@ -277,6 +277,19 @@ def agent_email_trigger():
     # content-based classification is not authoritative over an explicit human trust signal.
     # Blocked senders and excluded keywords still take priority and are enforced inside
     # evaluate_email_intent before any Gemini call.
+    # Pre-compute keyword set for fast-track check (lowercase, for content matching)
+    keyword_set_lower = [kw.lower() for kw in keyword_filters]
+
+    def _keyword_fast_track(email_dict):
+        """Return True if any user keyword appears in the email subject or body."""
+        if not keyword_set_lower:
+            return False
+        haystack = ' '.join([
+            email_dict.get('subject', ''),
+            (email_dict.get('body', '') or email_dict.get('snippet', ''))[:2000],
+        ]).lower()
+        return any(kw in haystack for kw in keyword_set_lower)
+
     if new_emails:
         from email_scanner import evaluate_email_intent
         from lib.email_helpers import _extract_sender_addr as _esa
@@ -288,6 +301,13 @@ def agent_email_trigger():
                     e['verdict'] = 'permitted'
                     e['verdict_confidence'] = 1.0
                     e['verdict_reason'] = 'Sender is on the permitted list'
+                elif _keyword_fast_track(e):
+                    # Keyword match — the user explicitly added this keyword; treat as permitted.
+                    # Same logic as the sender allowlist: an explicit human trust signal beats
+                    # Gemini content classification. Do not call evaluate_email_intent.
+                    e['verdict'] = 'permitted'
+                    e['verdict_confidence'] = 1.0
+                    e['verdict_reason'] = 'Matches user keyword filter'
                 else:
                     result = evaluate_email_intent(e, email_intent, blocked_set_trigger, permitted_set_trigger, excluded_keywords=exclude_keywords)
                     e['verdict'] = result['verdict']

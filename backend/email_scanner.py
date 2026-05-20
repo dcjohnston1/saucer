@@ -2,9 +2,19 @@ import json
 import re
 import uuid
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 
-genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+# Lazy client — instantiated on first use so the module can be imported even
+# when GOOGLE_API_KEY is not set (e.g. in test environments or on import checks).
+_genai_client = None
+
+
+def _get_client():
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    return _genai_client
 
 # Shared verdict rules injected into both evaluate_email_intent() and
 # batch_evaluate_emails_intent(). Update here to change behavior in both paths.
@@ -83,11 +93,12 @@ def evaluate_email_intent(email, email_intent, blocked_senders=None, permitted_s
     )
 
     try:
-        model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',
-            generation_config={'response_mime_type': 'application/json'}
+        response = _get_client().models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(response_mime_type='application/json'),
         )
-        result = json.loads(model.generate_content(prompt).text)
+        result = json.loads(response.text)
         verdict = result.get('verdict', 'uncertain')
         if verdict not in ('permitted', 'uncertain', 'blocked'):
             verdict = 'uncertain'
@@ -101,17 +112,18 @@ def evaluate_email_intent(email, email_intent, blocked_senders=None, permitted_s
         return {'verdict': 'uncertain', 'confidence': 0.5, 'reason': 'Evaluation error — showing as uncertain'}
 
 
-def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, blocked_senders=None, permitted_senders=None):
+def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, blocked_senders=None, permitted_senders=None, keyword_filters=None):
     """Batch-evaluate emails against intent using up to 20 emails per Gemini call.
 
     Returns dict: email_id -> {verdict, reason}
-    Priority order: blocked sender > excluded keywords > content-based intent check.
-    Permitted sender status prevents blocking on identity alone; content evaluation applies normally.
+    Priority order: blocked sender > excluded keywords > permitted sender > keyword filter > content-based intent check.
+    Permitted senders and keyword-matched emails short-circuit Gemini evaluation entirely.
     """
     results = {}
     blocked_set = {s.lower() for s in (blocked_senders or [])}
     permitted_set = {s.lower() for s in (permitted_senders or [])}
     excl_lower = [kw.lower() for kw in (excluded_keywords or [])]
+    kw_lower = [kw.lower() for kw in (keyword_filters or [])]
     excl_str = ', '.join(excl_lower) if excl_lower else 'none'
 
     to_evaluate = []
@@ -128,6 +140,20 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
         if excl_lower and any(kw in subject_lower or kw in snippet_lower for kw in excl_lower):
             results[email_id] = {'verdict': 'blocked', 'reason': 'Matches excluded subject or keyword'}
             continue
+
+        if sender_addr in permitted_set:
+            # Explicit sender allowlist — authoritative, skip Gemini.
+            results[email_id] = {'verdict': 'permitted', 'reason': 'Sender is on the permitted list'}
+            continue
+
+        if kw_lower:
+            haystack = ' '.join([
+                e.get('subject', ''),
+                (e.get('body', '') or e.get('snippet', ''))[:2000],
+            ]).lower()
+            if any(kw in haystack for kw in kw_lower):
+                results[email_id] = {'verdict': 'permitted', 'reason': 'Matches user keyword filter'}
+                continue
 
         if not email_intent:
             results[email_id] = {'verdict': 'permitted', 'reason': 'No intent description set'}
@@ -161,11 +187,12 @@ def batch_evaluate_emails_intent(emails, email_intent, excluded_keywords=None, b
         )
 
         try:
-            model = genai.GenerativeModel(
-                model_name='gemini-2.5-flash',
-                generation_config={'response_mime_type': 'application/json'}
+            response = _get_client().models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(response_mime_type='application/json'),
             )
-            verdicts = json.loads(model.generate_content(prompt).text)
+            verdicts = json.loads(response.text)
             for j, e in enumerate(batch):
                 email_id = e.get('id', '')
                 sender_addr = _addr(e.get('sender', ''))
@@ -195,8 +222,11 @@ def extract_topic_noun_phrase(email):
         f'Subject: {subject}\nBody preview: {body[:300]}'
     )
     try:
-        model = genai.GenerativeModel(model_name='gemini-2.5-flash')
-        return model.generate_content(prompt).text.strip().lower()[:60]
+        response = _get_client().models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text.strip().lower()[:60]
     except Exception as e:
         print(f"Topic extraction error: {e}")
         return 'this type of email'
@@ -243,11 +273,11 @@ Emails to review:
 """ + "\n\n---\n\n".join(blocks)
 
     try:
-        model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',
-            generation_config={'response_mime_type': 'application/json'}
+        response = _get_client().models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(response_mime_type='application/json'),
         )
-        response = model.generate_content(prompt)
         items = json.loads(response.text)
 
         result = {}
@@ -301,11 +331,11 @@ Emails:
 """ + "\n\n---\n\n".join(blocks)
 
     try:
-        model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',
-            generation_config={'response_mime_type': 'application/json'}
+        response = _get_client().models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(response_mime_type='application/json'),
         )
-        response = model.generate_content(prompt)
         raw = response.text
         print(f"[summarize] raw response (first 200 chars): {raw[:200]}")
         items = json.loads(raw)

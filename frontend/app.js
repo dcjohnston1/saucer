@@ -631,13 +631,34 @@ async function loadCachedEmails(filters) {
   }
 }
 
+// Returns true when an email has at least one trust signal: a permitted-sender
+// pill or a matched topic. Pill-less emails (neither condition) belong in the
+// secondary "Other Emails" tray rather than the primary inbox.
+function _emailHasSignal(email) {
+  const hasTrustPill = (email.verdict_reason || '') === 'Sender is on the permitted list';
+  const hasMatchedTopic = !!(email.matched_topic || '').trim();
+  return hasTrustPill || hasMatchedTopic;
+}
+
 function _renderEmailsWithGroups(container, emails) {
   const permittedEmails = emails.filter(e => (e.verdict || 'permitted') !== 'uncertain');
   const uncertainEmails = emails.filter(e => e.verdict === 'uncertain');
-  permittedEmails.forEach(email => {
+
+  // Split permitted emails into primary (has trust signal) and other (pill-less).
+  const primaryEmails = permittedEmails.filter(_emailHasSignal);
+  const otherEmails = permittedEmails.filter(e => !_emailHasSignal(e));
+
+  primaryEmails.forEach(email => {
     const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
     container.appendChild(buildEmailCard(email, isNew));
   });
+
+  // "Other Emails" collapsed tray — pill-less emails that passed the filter
+  // but have no explanatory signal. Never hidden; always accessible.
+  if (otherEmails.length > 0) {
+    _appendOtherEmailsTray(container, otherEmails);
+  }
+
   if (uncertainEmails.length > 0) {
     const header = document.createElement('div');
     header.className = 'uncertain-section-header';
@@ -649,6 +670,7 @@ function _renderEmailsWithGroups(container, emails) {
       container.appendChild(buildEmailCard(email, isNew));
     });
   }
+
   // Show the suggested tasks section once emails are loaded
   const tasksSection = document.getElementById('suggested-tasks-section');
   if (tasksSection && emails.length > 0) {
@@ -659,6 +681,38 @@ function _renderEmailsWithGroups(container, emails) {
       runScanTodos();
     }
   }
+}
+
+function _appendOtherEmailsTray(container, otherEmails) {
+  const tray = document.createElement('div');
+  tray.className = 'other-emails-tray';
+  tray.dataset.otherEmailsTray = '1';
+
+  const toggle = document.createElement('div');
+  toggle.className = 'other-emails-toggle';
+  toggle.setAttribute('role', 'button');
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.innerHTML = `<span class="other-emails-title">Other Emails</span><span class="other-emails-count">${otherEmails.length}</span><span class="other-emails-chevron">▸</span>`;
+
+  const body = document.createElement('div');
+  body.className = 'other-emails-body hidden';
+
+  otherEmails.forEach(email => {
+    const isNew = sessionPrevSeenAt > 0 && new Date(email.date).getTime() > sessionPrevSeenAt;
+    body.appendChild(buildEmailCard(email, isNew));
+  });
+
+  toggle.addEventListener('click', () => {
+    const expanded = !body.classList.contains('hidden');
+    body.classList.toggle('hidden', expanded);
+    toggle.setAttribute('aria-expanded', String(!expanded));
+    toggle.querySelector('.other-emails-chevron').textContent = expanded ? '▸' : '▾';
+  });
+
+  tray.appendChild(toggle);
+  tray.appendChild(body);
+  container.appendChild(tray);
+  return tray;
 }
 
 async function backgroundSync(filters) {
@@ -676,13 +730,27 @@ async function backgroundSync(filters) {
     const newEmails = emails.filter(e => !currentIds.has(e.id));
     if (newEmails.length === 0) return;
     newEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
-    // Insert permitted ones at top, then re-render uncertain section
+    // Split new permitted emails into primary (has signal) vs. other (pill-less)
     const newPermitted = newEmails.filter(e => (e.verdict || 'permitted') !== 'uncertain');
     const newUncertain = newEmails.filter(e => e.verdict === 'uncertain');
+    const newPrimary = newPermitted.filter(_emailHasSignal);
+    const newOther = newPermitted.filter(e => !_emailHasSignal(e));
     const firstChild = emailsContent.firstChild;
-    newPermitted.forEach(email => {
+    newPrimary.forEach(email => {
       emailsContent.insertBefore(buildEmailCard(email, true), firstChild);
     });
+    // Add pill-less new emails into the Other Emails tray (or create one)
+    if (newOther.length > 0) {
+      let tray = emailsContent.querySelector('[data-other-emails-tray]');
+      if (!tray) {
+        _appendOtherEmailsTray(emailsContent, newOther);
+      } else {
+        const body = tray.querySelector('.other-emails-body');
+        newOther.forEach(email => body.appendChild(buildEmailCard(email, true)));
+        const count = body.querySelectorAll('.email-card-wrapper').length;
+        tray.querySelector('.other-emails-count').textContent = count;
+      }
+    }
     if (newUncertain.length > 0) {
       let header = emailsContent.querySelector('[data-uncertain-header]');
       if (!header) {
@@ -1177,7 +1245,14 @@ function buildProposalsSection(card, email) {
   const section = document.createElement('div');
   section.className = 'email-proposals';
 
-  if (email.proposals === undefined || email.proposals === null) {
+  // Normalise: treat null/undefined as an empty array so the logic below is
+  // uniform. Blocked emails get a special label; all other zero-proposal cases
+  // get "No to-dos found".
+  const proposals = Array.isArray(email.proposals) ? email.proposals : [];
+  const renderedCount = proposals.length;
+
+  if (renderedCount === 0) {
+    // Only show the fallback message when no proposal cards will be rendered.
     const msg = document.createElement('div');
     msg.className = 'proposals-scanning';
     msg.textContent = email.verdict === 'blocked' ? 'Not scanned' : 'No to-dos found';
@@ -1186,20 +1261,18 @@ function buildProposalsSection(card, email) {
     return;
   }
 
-  const hasPending = email.proposals.length > 0;
-
-  if (hasPending) {
-    const header = document.createElement('div');
-    header.className = 'proposals-header';
-    header.textContent = 'Action items';
-    section.appendChild(header);
-    email.proposals.forEach(p => section.appendChild(buildProposalRow(p, email.id, card)));
-  }
+  // At least one proposal — render cards. Suppress the "No to-dos found"
+  // fallback entirely; it is contradictory when proposals are present.
+  const header = document.createElement('div');
+  header.className = 'proposals-header';
+  header.textContent = 'Action items';
+  section.appendChild(header);
+  proposals.forEach(p => section.appendChild(buildProposalRow(p, email.id, card)));
 
   const reviewBtn = document.createElement('button');
   reviewBtn.className = 'review-btn';
   reviewBtn.textContent = 'Mark Reviewed';
-  reviewBtn.disabled = hasPending;
+  reviewBtn.disabled = true;
   reviewBtn.addEventListener('click', () => reviewEmail(email.id, card.closest('.email-card-wrapper')));
   section.appendChild(reviewBtn);
 

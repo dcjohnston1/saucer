@@ -440,3 +440,50 @@ Bug 3: Resolved as a side effect of Bug 1b. buildProposalRow was correct through
 - **Pending CEO smoke-test:** visual pill placement, color, truncation, and topic pill end-to-end against a real new email. I cannot drive a browser.
 
 **What is next:** Sprint 17 planning, once CEO confirms Sprint 16 lands visually. Open backlog: Sprint 15 decisions (5 outstanding), calendar integration, namespace migration, mobile framework, Emily gate, Privacy Policy + ToS.
+
+---
+
+## 2026-05-20 Sprint 16 Close + Sprint 17 Kickoff
+
+**Sprint 16 — Trust Pills + Honest Dismissed Labels — COMPLETE ✓**
+Git commit 3b80e72. Backend saucer-backend-00181-l9w. Frontend saucer-frontend-00128-pj8.
+
+**What was delivered:**
+- Honest "Not scanned" label replaces "No to-dos found" on filter-blocked emails in the Dismissed view. First time the app tells the truth about why an email wasn't scanned.
+- "From someone you trust" pill renders left of the sender address on inbox cards when the sender is allowlisted. Already works for 38 of 101 cached emails.
+- "Matched: {phrase}" pill renders under the subject line when a keyword or freetext topic match fired. Backend writes `matched_topic` field — additive, no migration.
+- No fallback pill: absence of both pills is a deliberate diagnostic signal that the filter let an email through for an unconfigured reason.
+
+**Key decisions:**
+- Marketing copy: "From someone you trust" (not "Known sender" — sounds IT-helpdesk).
+- No fallback pill is a design commitment, not a gap. Pill-less inbox emails are filter holes to fix, not UI gaps to paper over.
+- `matched_topic` is additive — old emails render without the pill (graceful degradation); new emails populate it via eval batch.
+
+**CEO smoke-test results:**
+- Trust pill confirmed working ("From someone you trust" displays correctly).
+- Bug B: Self-email (dcjohnston1@gmail.com) shows trust pill + extracted to-do + "No to-dos found" on same card — contradictory. `buildProposalsSection` renders the fallback unconditionally.
+- Bug A: Nextdoor spam email (reply@ss.email.nextdoor.com, "Closed for good!!") in primary inbox with no pill and "No to-dos found." No signal to user. Filter hole exposed by the no-fallback rule.
+
+---
+
+**Sprint 17 — Inbox Signal Integrity — LAUNCHED**
+Sprint definition: `/home/dcjohnston1/saucer/team/sprint_17.md`
+
+**What is being delivered:**
+1. Task 1 (Bug B): Fix `buildProposalsSection` in `app.js` to suppress "No to-dos found" when at least one proposal card was rendered. One conditional change. Pure frontend, small.
+2. Task 2 (Bug A): Route pill-less emails (verdict=permitted, no trust pill, no topic pill) to a collapsed "Other Emails" secondary tray at the bottom of the inbox. Pure frontend, in-memory classification using existing `verdict_reason` and `matched_topic` fields. No backend changes, no new Gemini calls, no new Firestore reads.
+
+**Key decisions made:**
+- "Other Emails" collapsed tray (not silent auto-dismiss) — transparency over hiding. Users can review tray emails; they are never hidden.
+- Classification is fully in-memory from fields already on the email doc. Zero marginal cost.
+- No backend work this sprint. The filter-gap routing (server-side) is deferred until the pattern of pill-less emails is better understood from tray data.
+- Token budget: ~3,000–4,500 tokens. Sprint scope held tight.
+
+**Team circle:** One round, clean consensus. No Round 2 needed.
+
+**Named gates still open:**
+- Emily must run Hana at least once.
+- Privacy Policy + ToS before more external users.
+- Calendar OAuth must move to per-user credentials before public onboarding.
+
+**Next sprint after 17:** Sprint 18 — Subscription + Paywall (Stripe or RevenueCat).

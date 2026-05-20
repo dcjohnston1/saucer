@@ -238,7 +238,7 @@ batch eval (so trusted signals never depend on Gemini). Recovered 729 poisoned e
 Sprint 15 originally planned as Subscription/Paywall — deferred. Production incidents took the slot.
 Git commits 681fe88 (self-email) and a11b09a (eval-error). Revisions 00178-758 and 00181-l9w.
 
-## Sprint 16 — Trust Pills + Honest Dismissed Labels — IN PROGRESS
+## Sprint 16 — Trust Pills + Honest Dismissed Labels — COMPLETE ✓
 Restore inbox trust after CEO screenshot review surfaced a live trust leak.
 Task 1: Honest Dismissed labels. Replace "No to-dos found" with "Not scanned" on filter-blocked
 emails in the Dismissed view. Distinguish from emails Hana actually scanned and found nothing.
@@ -263,10 +263,21 @@ Deferred to Sprint 17+:
 - Marketing strategy definition
 - Emily named-gate close
 
-## Sprint 17 — Subscription + Paywall — PLACEHOLDER
+## Sprint 17 — Inbox Signal Integrity — STAGED
+Fix two trust regressions from Sprint 16 CEO smoke-test.
+
+Task 1: Fix contradictory "No to-dos found" on cards with proposal items. `buildProposalsSection` in `app.js` — suppress fallback text when at least one proposal card was rendered. Pure frontend. Small.
+
+Task 2: Route pill-less emails (verdict=permitted, no trust pill, no topic pill) to a collapsed "Other Emails" secondary tray at the bottom of the inbox. Pure frontend, in-memory classification using existing `verdict_reason` and `matched_topic` fields. No new Gemini calls, no new Firestore reads.
+
+Acceptance: 7 criteria in sprint_17.md. Both tasks are frontend-only. Token estimate: 3,000–4,500.
+
+Deferred to Sprint 18+: Subscription/Paywall, App Store prep, Privacy Policy/ToS, calendar OAuth, namespace migration, Emily gate, mobile framework decision.
+
+## Sprint 18 — Subscription + Paywall — PLACEHOLDER
 Stripe or RevenueCat subscription integration, paywall, pricing tier UX.
 
-## Sprint 18 — App Store Prep + Submission — PLACEHOLDER
+## Sprint 19 — App Store Prep + Submission — PLACEHOLDER
 Privacy policy, OAuth scope justification, TestFlight beta (5-10 users minimum), submission.
 Allow 2-4 week review buffer given Gmail/Calendar scope sensitivity.
 
